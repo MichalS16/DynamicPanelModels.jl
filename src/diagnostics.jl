@@ -94,6 +94,9 @@ function diff_hansen_test(restricted::DynamicPanelResult, unrestricted::DynamicP
     df = df_u - df_r
 
     c_stat = max(restricted.j_stat - unrestricted.j_stat, 0.0)
+    if df <= 0
+        return DynamicPanelTest("Difference-in-Hansen (C)", 0.0, 0, 1.0)
+    end
     pvalue = 1.0 - cdf(Chisq(df), c_stat)
     return DynamicPanelTest("Difference-in-Hansen (C)", c_stat, df, pvalue)
 end
@@ -125,14 +128,16 @@ function ar_test(model::DynamicPanelResult, order::Int, id::Vector, time::Vector
     V = model.vcov
 
     # Compute test statistic
-    res_lag = _lag_vector(res, id, time, order)
+    idx_map = _id_time_index(id, time)
+    res_lag = _lag_vector(res, id, time, order, idx_map)
     numerator = dot(res, res_lag)
     var_moments = sum((res .* res_lag) .^ 2)
 
-    # Compute variance of the estimation part
+    # Compute variance of the estimation part (reuse idx_map across columns
+    # instead of rebuilding it once per regressor)
     X_lag = similar(X)
     for i in axes(X, 2)
-        X_lag[:, i] = _lag_vector(X[:, i], id, time, order)
+        X_lag[:, i] = _lag_vector(X[:, i], id, time, order, idx_map)
     end
 
     # Variance calculation
@@ -208,10 +213,7 @@ Calculates the goodness-of-fit (R²) for a `DynamicPanelResult` model.
 - `Float64`: The R² value representing the proportion of variance explained by the model.
 """
 function goodness_of_fit(model::DynamicPanelResult)
-    # Pseudo R² calculation
-    r = cor(model.y, model.fitted)
-
-    return r^2
+    return StatsAPI.r2(model)
 end
 
 """
@@ -280,25 +282,42 @@ Compute the lagged version of a vector within groups identified by `id`.
 - `Vector`: A vector of the same length as `v` with lagged values; entries without a corresponding lag are zero.
 """
 function _lag_vector(v::Vector, id::Vector, time::Vector, k::Int)
-    # Create lagged version of vector `v` by `k` periods within each panel `id`
+    idx_map = _id_time_index(id, time)
+    return _lag_vector(v, id, time, k, idx_map)
+end
+
+"""
+    _lag_vector(v, id, time, k, idx_map)
+
+Same as `_lag_vector(v, id, time, k)`, but reuses a precomputed `(id, time) =>
+row` index map (see [`_id_time_index`](@ref)) instead of rebuilding it —
+callers lagging several columns against the same `(id, time)` (e.g.
+`ar_test`'s per-regressor loop) should build the map once and pass it in.
+"""
+function _lag_vector(v::Vector, id::Vector, time::Vector, k::Int, idx_map::Dict)
     n = length(v)
     v_lagged = zeros(eltype(v), n)
-    idx_map = Dict{Tuple{Any,Any},Int}()
-
-    # Build index map
-    for i in 1:n
-        idx_map[(id[i], time[i])] = i
-    end
-
-    # Construct lagged values
     for i in 1:n
         target = (id[i], time[i] - k)
         if haskey(idx_map, target)
             v_lagged[i] = v[idx_map[target]]
         end
     end
-
     return v_lagged
+end
+
+"""
+    _id_time_index(id::Vector, time::Vector)
+
+Build a `(id, time) => row` index map for a panel, concretely typed on
+`eltype(id)`/`eltype(time)` (rather than `Any`) so lookups avoid boxing.
+"""
+function _id_time_index(id::Vector, time::Vector)
+    idx_map = Dict{Tuple{eltype(id),eltype(time)},Int}()
+    for i in eachindex(id, time)
+        idx_map[(id[i], time[i])] = i
+    end
+    return idx_map
 end
 
 """
@@ -341,7 +360,6 @@ function diagnose(model::DynamicPanelResult; id=nothing, time=nothing)
         ar2 = ar_test(model, 2, id, time)
         results[:ar1] = ar1
         results[:ar2] = ar2
-        model.metadata[:ar_tests] = Dict(1 => ar1, 2 => ar2)
         @printf("AR(1) test (serial corr):   stat = %8.3f, p-val = %6.4f\n", ar1.stat, ar1.pvalue)
         @printf("AR(2) test (serial corr):   stat = %8.3f, p-val = %6.4f\n", ar2.stat, ar2.pvalue)
     else

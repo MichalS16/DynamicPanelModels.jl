@@ -188,6 +188,20 @@ using DynamicPanelModels
         # Unsupported transformation is rejected (whitelist, no eval)
         @test_throws ErrorException get_diff_data(df, :id, :t, "y ~ sin(x)", DifferenceGMM())
 
+        # Non-ASCII/unicode identifiers are rejected with a clear parse error
+        # (the identifier regex is ASCII-only by design), not silently accepted.
+        unicode_df = rename(df, :y => Symbol("β"))
+        @test_throws ErrorException get_diff_data(
+            unicode_df, :id, :t, "β ~ lag(β)", DifferenceGMM()
+        )
+
+        # Deeply nested transforms (3+ levels) are rejected, not silently
+        # mis-parsed: _parse_expr's regex supports exactly one level of f(var)
+        # nesting, so lag(log(sqrt(x))) has no valid inner match.
+        @test_throws ErrorException get_diff_data(
+            df, :id, :t, "y ~ lag(log(sqrt(x)))", DifferenceGMM()
+        )
+
         # Time effects add T-2 exogenous period dummies (first two periods dropped
         # for identification in the differenced equation). Here T=5 -> t=3,4,5.
         d4 = get_diff_data(df, :id, :t, "y ~ lag(y) + x", DifferenceGMM(); time_effects=true)

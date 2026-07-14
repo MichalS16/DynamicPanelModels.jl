@@ -138,18 +138,30 @@ function _solve_gmm(y, X, Z, diff_data, coef_names, steps, robust, windmeijer, m
 
     # Initial One-Step GMM Estimation
     W1 = initial_weight_matrix(model_type, Z, diff_data)
-    bread1 = inv(posdef_fix(ZtX' * W1 * ZtX))
-    β1 = bread1 * (ZtX' * W1 * Zty)
+    G1 = ZtX' * W1  # reused for bread1, β1, and (if one-step robust) the sandwich below
+    bread1 = inv(posdef_fix(G1 * ZtX))
+    β1 = bread1 * (G1 * Zty)
     res1 = y - X * β1
     β, W, final_bread = β1, W1, bread1
-    vcov = Matrix{Float64}(undef, n_reg, n_reg)
     is_windmeijer = false
+
+    # Computed once and reused by both calculate_clustered_weight_matrix and
+    # calculate_windmeijer_correction below (both would otherwise re-walk the
+    # same panel_info to find the same cluster boundaries).
+    ranges = _cluster_ranges(diff_data.panel_info)
+
+    # Densified at most once and threaded through every call below:
+    # calculate_clustered_weight_matrix and calculate_windmeijer_correction
+    # would otherwise each independently call Matrix(Z) on the same sparse
+    # instrument matrix, paying the conversion twice instead of once. Only
+    # computed when actually needed (skipped for one-step, non-robust fits).
+    Zd = (steps == 2 || robust) ? _densify(Z) : Z
 
     # Two-Step GMM
     if steps == 2
         # Second-Step Estimation
         Ω_clustered = calculate_clustered_weight_matrix(
-            Z, res1, diff_data.panel_info, diff_data.n_groups
+            Zd, res1, diff_data.panel_info, diff_data.n_groups; ranges=ranges
         )
         W2 = inv(posdef_fix(Ω_clustered))
         bread2 = inv(posdef_fix(ZtX' * W2 * ZtX))
@@ -159,10 +171,10 @@ function _solve_gmm(y, X, Z, diff_data, coef_names, steps, robust, windmeijer, m
         # Variance-Covariance Matrix
         if robust && windmeijer
             # One-step robust (sandwich) covariance, used in the Windmeijer correction
-            V1r = bread1 * (ZtX' * W1 * Ω_clustered * W1 * ZtX) * bread1
+            V1r = bread1 * (G1 * Ω_clustered * G1') * bread1
             # Windmeijer Finite-Sample Correction
             vcov = calculate_windmeijer_correction(
-                Z, X, res1, β2, ZtX, Zty, W2, bread2, V1r, diff_data.panel_info
+                Zd, X, res1, β2, ZtX, Zty, W2, bread2, V1r, diff_data.panel_info; ranges=ranges
             )
             is_windmeijer = true
         else
@@ -178,9 +190,9 @@ function _solve_gmm(y, X, Z, diff_data, coef_names, steps, robust, windmeijer, m
         if robust
             # Clustered Robust SEs
             Ω_clustered = calculate_clustered_weight_matrix(
-                Z, res1, diff_data.panel_info, diff_data.n_groups
+                Zd, res1, diff_data.panel_info, diff_data.n_groups; ranges=ranges
             )
-            vcov = bread1 * (ZtX' * W1 * Ω_clustered * W1 * ZtX) * bread1
+            vcov = bread1 * (G1 * Ω_clustered * G1') * bread1
         else
             # Homoskedastic SEs
             σ2 = dot(res1, res1) / (n_obs - n_reg)
@@ -246,44 +258,43 @@ where Ω accounts for clustering within groups.
 # Returns
 - `A::Matrix`: Clustered robust moment matrix of size `(size(Z,2), size(Z,2))`.
 """
-function calculate_clustered_weight_matrix(Z, residuals, panel_info, n_groups)
-    # Initialize moment matrix
-    n_inst = size(Z, 2)
-    A = zeros(n_inst, n_inst)
+# Densify once: row-slicing a SparseMatrixCSC per cluster/individual is far more
+# expensive (each slice re-copies into a new sparse structure) than a single
+# upfront conversion followed by cheap `@view`s into a dense matrix.
+_densify(Z) = Z isa AbstractSparseMatrix ? Matrix(Z) : Z
+
+# Ranges of consecutive rows sharing the same `.id`, assuming `panel_info` is
+# already grouped by individual (an existing invariant of the pipeline).
+function _cluster_ranges(panel_info)
     n_rows = length(panel_info)
-
-    # Return zero matrix if no data
-    if n_rows == 0
-        return A
-    end
-
-    # Tracking indices for group blocks
+    n_rows == 0 && return UnitRange{Int}[]
+    ranges = UnitRange{Int}[]
     start_idx = 1
     current_id = panel_info[1].id
-
-    # Iterate over data to find group blocks
     for i in 1:n_rows
-        # Check if end of group
         is_last = (i == n_rows)
         next_id = is_last ? nothing : panel_info[i + 1].id
-
-        # When group ends, compute contribution
-        if is_last || (current_id != next_id)
-            # Compute for group
-            end_idx = i
-            Z_i = Z[start_idx:end_idx, :]
-            u_i = residuals[start_idx:end_idx]
-            Zu_i = Z_i' * u_i
-            A += Zu_i * Zu_i'
-
-            # Update for next group
+        if is_last || current_id != next_id
+            push!(ranges, start_idx:i)
             if !is_last
                 current_id = next_id
                 start_idx = i + 1
             end
         end
     end
+    return ranges
+end
 
+function calculate_clustered_weight_matrix(
+    Z, residuals, panel_info, n_groups; ranges=_cluster_ranges(panel_info)
+)
+    n_inst = size(Z, 2)
+    A = zeros(n_inst, n_inst)
+    Zd = _densify(Z)
+    for r in ranges
+        Zu_i = @view(Zd[r, :])' * @view(residuals[r])
+        A += Zu_i * Zu_i'
+    end
     return A
 end
 
@@ -331,39 +342,27 @@ both are common pitfalls.)
 # Returns
 - `V_corr::Matrix`: Windmeijer-corrected variance-covariance matrix.
 """
-function calculate_windmeijer_correction(Z, X, res1, β2, ZtX, Zty, W2, V2, V1r, panel_info)
+function calculate_windmeijer_correction(
+    Z, X, res1, β2, ZtX, Zty, W2, V2, V1r, panel_info; ranges=_cluster_ranges(panel_info)
+)
     n_reg = size(X, 2)
     n_inst = size(Z, 2)
-    n_rows = length(panel_info)
 
     # c = W2 Z'û2, using the two-step residuals (small by the moment conditions)
     c = W2 * (Zty - ZtX * β2)
 
-    # Densify once: row-slicing a SparseMatrixCSC per cluster is far more
-    # expensive (each slice re-copies into a new sparse structure) than a single
-    # upfront conversion followed by cheap `@view`s into a dense matrix.
-    Zd = Z isa AbstractSparseMatrix ? Matrix(Z) : Z
+    Zd = _densify(Z)
 
     # Accumulate temp = (∂Ω1/∂β1) applied to c, preserving per-cluster structure.
     # Column k gathers -Σ_i [ (Z_i'u_i · c) Z_i'X_i[:,k] + (Z_i'X_i[:,k] · c) Z_i'u_i ].
     temp = zeros(n_inst, n_reg)
-    start_idx = 1
-    current_id = panel_info[1].id
-    for i in 1:n_rows
-        is_last = (i == n_rows)
-        next_id = is_last ? nothing : panel_info[i + 1].id
-        if is_last || (current_id != next_id)
-            Z_i = @view Zd[start_idx:i, :]
-            X_i = @view X[start_idx:i, :]
-            u_i = @view res1[start_idx:i]
-            Zu = Z_i' * u_i           # L
-            ZX = Z_i' * X_i           # L×K
-            temp .+= -((Zu' * c) .* ZX .+ Zu * (ZX' * c)')
-            if !is_last
-                current_id = next_id
-                start_idx = i + 1
-            end
-        end
+    for r in ranges
+        Z_i = @view Zd[r, :]
+        X_i = @view X[r, :]
+        u_i = @view res1[r]
+        Zu = Z_i' * u_i           # L
+        ZX = Z_i' * X_i           # L×K
+        temp .+= -((Zu' * c) .* ZX .+ Zu * (ZX' * c)')
     end
 
     # D = ∂β2/∂β1 (K×K); assemble the corrected variance.
@@ -397,20 +396,66 @@ function posdef_fix(A; tol=1e-12)
 end
 
 """
-Compute the initial (one-step) GMM weighting matrix `(Z'Z)^-1`.
+Compute the initial (one-step) GMM weighting matrix.
 
-This is the standard choice for all supported estimators (Difference, System,
-Anderson-Hsiao); it is a reasonable default that does not depend on unknown
-parameters. `diff_data` is accepted for API symmetry but currently unused.
+For `DifferenceGMM`, this is `(Z'HZ)^-1` (Arellano & Bond, 1991, p. 279), where
+`H` reflects the MA(1) structure that first-differencing imposes on a
+homoskedastic error term: `H_i[t,s] = 2` if `t == s`, `-1` if periods `t` and
+`s` are calendar-adjacent, `0` otherwise, summed over each individual's own
+differenced-equation rows (handling gaps in unbalanced panels, where
+non-adjacent rows get no off-diagonal term). Using plain `(Z'Z)^-1` instead is
+a common simplification but is not the efficient one-step weighting matrix
+under homoskedasticity and biases the Sargan/Hansen J-statistic downward.
+
+For `SystemGMM` and `AndersonHsiao`, the plain `(Z'Z)^-1` is used: the `H`
+matrix above is specific to the pure-difference moment structure and does not
+carry over unchanged once level-equation moments are added.
 
 # Arguments
 - `model::AbstractDynamicPanelModel`: The dynamic panel model.
 - `Z`: Instrument matrix.
-- `diff_data`: Differenced data (currently unused).
+- `diff_data`: Differenced data; `panel_info` is used for `DifferenceGMM`.
 
 # Returns
-- `W::Matrix`: Initial weighting matrix `(Z'Z)^-1`.
+- `W::Matrix`: Initial weighting matrix.
 """
 function initial_weight_matrix(::AbstractDynamicPanelModel, Z, diff_data)
     return inv(posdef_fix(Matrix(Z' * Z)))
+end
+
+function initial_weight_matrix(::DifferenceGMM, Z, diff_data)
+    # A_N = N^-1 * sum_i Z_i'HZ_i (Arellano & Bond, 1991, eq. 3-4); the N^-1 factor
+    # cancels out of the coefficient estimate but is required for the one-step
+    # Sargan/Hansen J-statistic to have its asymptotic chi-squared scale.
+    N = diff_data.n_groups
+    return inv(posdef_fix(_ab_h_weight_matrix(Z, diff_data.panel_info) / N))
+end
+
+# Z'HZ summed over individuals, where H_i[t,s] = 2 (t==s), -1 (calendar-adjacent
+# periods), 0 otherwise — restricted to each individual's own differenced-equation
+# rows (is_level == false), so unbalanced-panel gaps correctly get no off-diagonal term.
+function _ab_h_weight_matrix(Z, panel_info)
+    n_inst = size(Z, 2)
+    A = zeros(n_inst, n_inst)
+    Zd = _densify(Z)
+
+    for r in _cluster_ranges(panel_info)
+        rows = [(j, panel_info[j].time) for j in r if !get(panel_info[j], :is_level, false)]
+        isempty(rows) && continue
+        idxs = first.(rows)
+        times = last.(rows)
+        Z_i = Zd[idxs, :]
+        m = length(idxs)
+        H_i = zeros(m, m)
+        for a in 1:m
+            H_i[a, a] = 2.0
+            for b in (a + 1):m
+                if times[b] - times[a] == 1
+                    H_i[a, b] = H_i[b, a] = -1.0
+                end
+            end
+        end
+        A += Z_i' * H_i * Z_i
+    end
+    return A
 end

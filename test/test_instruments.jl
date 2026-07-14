@@ -62,6 +62,12 @@ using DynamicPanelModels
         @test size(build_instruments(model, diff_data; min_lag=3), 2) == 1
         # max_lag=2 keeps only order <= 2: one col per differenced period -> 2
         @test size(build_instruments(model, diff_data; max_lag=2), 2) == 2
+
+        # Inverted/degenerate bounds must error immediately rather than silently
+        # producing a 0-column instrument matrix that later surfaces as a confusing
+        # generic "under-identified" error from `estimate`.
+        @test_throws ErrorException build_instruments(model, diff_data; min_lag=5, max_lag=3)
+        @test_throws ErrorException build_instruments(model, diff_data; max_lags=0)
     end
 
     # Difference GMM with collapsed instruments

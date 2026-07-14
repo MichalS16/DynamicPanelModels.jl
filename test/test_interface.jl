@@ -59,7 +59,11 @@ using Random
         @test coef(model) === model.coef
         @test vcov(model) === model.vcov
         @test nobs(model) == n_obs
+        @test nobs(model; count_groups=true) == n_groups
         @test dof(model) == 2
+        @test dof_residual(model) == n_obs - 2
+        @test residuals(model) === model.residuals
+        @test predict(model) === model.fitted
         @test formula(model) == "y ~ lag(y) + x1"
     end
 
@@ -72,6 +76,9 @@ using Random
         # Confidence Intervals
         ci = confint(model; level=0.95)
         @test size(ci) == (2, 2)
+        z = quantile(Normal(), 0.975)
+        @test ci[:, 1] ≈ coef(model) .- z .* stderror(model)
+        @test ci[:, 2] ≈ coef(model) .+ z .* stderror(model)
 
         # Coefficient Table
         ct = coeftable(model)

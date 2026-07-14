@@ -105,6 +105,11 @@ using Statistics
         # Check that the points fall approximately on the y=x line
         qq_scatter = recipes[findfirst(s -> s.plotattributes[:seriestype] == :scatter, recipes)]
         @test isapprox(std(qq_scatter.args[2]), 1.0, atol=1e-10)
+
+        # Sample quantiles must actually be sorted ascending (matching the
+        # ascending theoretical quantiles) -- std==1 alone wouldn't catch an
+        # unsorted/shuffled scatter with the same overall spread.
+        @test issorted(qq_scatter.args[2])
     end
 
     # Error Handling Recipe

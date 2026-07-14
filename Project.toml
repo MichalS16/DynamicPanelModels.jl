@@ -1,6 +1,6 @@
 name = "DynamicPanelModels"
 uuid = "2feff84d-53dc-4a9a-aa25-96ecd7dbbe5b"
-version = "0.3.0"
+version = "0.3.1"
 authors = ["MichalS16"]
 
 [deps]
@@ -20,11 +20,11 @@ Tables = "bd369af6-aec1-5ad0-b16a-f7cc5008161c"
 Aqua = "0.8"
 DataFrames = "1.8"
 Distributions = "0.25"
-LinearAlgebra = "1.12"
+LinearAlgebra = "1.11"
 Printf = "1.11"
 Random = "1.11"
 RecipesBase = "1.3"
-SparseArrays = "1.12"
+SparseArrays = "1.11"
 Statistics = "1.11"
 StatsAPI = "1.8"
 StatsBase = "0.34"

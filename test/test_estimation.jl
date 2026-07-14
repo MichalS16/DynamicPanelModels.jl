@@ -8,6 +8,32 @@ using DataFrames
 using DynamicPanelModels
 
 @testset "Estimation" begin
+    @testset "posdef_fix" begin
+        # Already positive definite: returned unchanged
+        A_pd = [2.0 0.0; 0.0 2.0]
+        @test DynamicPanelModels.posdef_fix(A_pd) == A_pd
+
+        # Mildly negative eigenvalue (floating-point-noise scale): shifted
+        # just enough to become positive definite.
+        A_mild = [1e-13 0.0; 0.0 1.0]
+        fixed_mild = DynamicPanelModels.posdef_fix(A_mild)
+        @test isposdef(Symmetric(fixed_mild))
+
+        # Severely rank-deficient input: still fixed to positive definite.
+        A_bad = [-1.0 0.0; 0.0 1.0]
+        @test isposdef(Symmetric(DynamicPanelModels.posdef_fix(A_bad)))
+    end
+
+    @testset "_lag_vector shared idx_map matches the rebuilt-per-call form" begin
+        id = [1, 1, 1, 2, 2, 2]
+        time = [1, 2, 3, 1, 2, 3]
+        v = [10.0, 20.0, 30.0, 100.0, 200.0, 300.0]
+
+        idx_map = DynamicPanelModels._id_time_index(id, time)
+        @test DynamicPanelModels._lag_vector(v, id, time, 1, idx_map) ==
+            DynamicPanelModels._lag_vector(v, id, time, 1)
+    end
+
     # Set up mock diff_data
     X_mat = reshape([1.0, 2.0, 0.5, 1.5], 4, 1)
     y = [0.55, 0.95, 0.20, 0.80]
@@ -75,6 +101,59 @@ using DynamicPanelModels
         @test res_w.windmeijer == true
         @test occursin("2-step", res_w.metadata[:method])
         @test stderror(res_w)[1] >= stderror(res_no_w)[1]
+
+        # Wiring guard (not an independent formula check — this calls the same
+        # production calculate_windmeijer_correction that _solve_gmm calls, so
+        # it cannot catch a bug in that function's math; it only catches
+        # _solve_gmm assembling the wrong arguments/order/stale values around
+        # it). Independent formula correctness is covered by
+        # test_integration.jl's "Windmeijer correction sanity" test against a
+        # simulated DGP with a known answer.
+        Z = DynamicPanelModels._drop_collinear_columns(build_instruments(model, diff_data))
+        ZtX_check = Z' * X_mat
+        Zty_check = Z' * y
+        W1_check = DynamicPanelModels.initial_weight_matrix(model, Z, diff_data)
+        bread1_check = inv(DynamicPanelModels.posdef_fix(ZtX_check' * W1_check * ZtX_check))
+        β1_check = bread1_check * (ZtX_check' * W1_check * Zty_check)
+        res1_check = y - X_mat * β1_check
+        Ω_check = DynamicPanelModels.calculate_clustered_weight_matrix(Z, res1_check, panel_info, 2)
+        W2_check = inv(DynamicPanelModels.posdef_fix(Ω_check))
+        bread2_check = inv(DynamicPanelModels.posdef_fix(ZtX_check' * W2_check * ZtX_check))
+        β2_check = bread2_check * (ZtX_check' * W2_check * Zty_check)
+        V1r_check =
+            bread1_check * (ZtX_check' * W1_check * Ω_check * W1_check * ZtX_check) * bread1_check
+        V_corr_check = DynamicPanelModels.calculate_windmeijer_correction(
+            Z,
+            X_mat,
+            res1_check,
+            β2_check,
+            ZtX_check,
+            Zty_check,
+            W2_check,
+            bread2_check,
+            V1r_check,
+            panel_info,
+        )
+        @test isapprox(V_corr_check, res_w.vcov)
+
+        # Guard that calculate_windmeijer_correction's `ranges` kwarg is
+        # actually consumed: a deliberately different partition (one big
+        # cluster instead of two, changing which residuals/regressors are
+        # treated as co-clustered) must change the corrected variance.
+        V_corr_wrong_ranges = DynamicPanelModels.calculate_windmeijer_correction(
+            Z,
+            X_mat,
+            res1_check,
+            β2_check,
+            ZtX_check,
+            Zty_check,
+            W2_check,
+            bread2_check,
+            V1r_check,
+            panel_info;
+            ranges=[1:4],
+        )
+        @test !isapprox(V_corr_wrong_ranges, V_corr_check)
     end
 
     # Under-identification & Small Sample
@@ -112,6 +191,93 @@ using DynamicPanelModels
         end
         @test err_small isa ErrorException
         @test occursin("Insufficient observations", err_small.msg)
+    end
+
+    # Guards the Arellano-Bond (1991, p.279) one-step weighting matrix:
+    # A_N = N^-1 * sum_i Z_i'HZ_i, H_i[t,s] = 2 (t==s), -1 (calendar-adjacent).
+    @testset "Arellano-Bond H weighting matrix" begin
+        # Two individuals, three consecutive differenced-equation periods each
+        # (times 2,3,4), one instrument column of all-ones so Z'HZ reduces to
+        # sum of H_i entries.
+        Z = sparse(ones(6, 1))
+        panel_info_h = [
+            (id=1, time=2, is_level=false),
+            (id=1, time=3, is_level=false),
+            (id=1, time=4, is_level=false),
+            (id=2, time=2, is_level=false),
+            (id=2, time=3, is_level=false),
+            (id=2, time=4, is_level=false),
+        ]
+        # Per individual: H_i is 3x3 with 2 on the diagonal and -1 on
+        # calendar-adjacent off-diagonals -> row/col sums are 2-1=1 (edges) or
+        # 2-1-1=0 (middle); total over the 3x3 all-ones contraction is
+        # sum(H_i) = 3*2 + 4*(-1) = 2 per individual, summed over both.
+        H = DynamicPanelModels._ab_h_weight_matrix(Z, panel_info_h)
+        @test H[1, 1] ≈ 4.0  # 2 individuals * (sum of one 3x3 H_i = 2)
+
+        # Gaps in an unbalanced panel must not get an off-diagonal -1: individual
+        # 2 is missing time 3, so times 2 and 4 are not calendar-adjacent.
+        panel_info_gap = [
+            (id=1, time=2, is_level=false),
+            (id=1, time=3, is_level=false),
+            (id=2, time=2, is_level=false),
+            (id=2, time=4, is_level=false),
+        ]
+        Z_gap = sparse(ones(4, 1))
+        H_gap = DynamicPanelModels._ab_h_weight_matrix(Z_gap, panel_info_gap)
+        # individual 1 (adjacent 2,3): sum(H_1) = 2*2 - 2*1 = 2
+        # individual 2 (gap, not adjacent): sum(H_2) = 2*2 + 0 = 4
+        @test H_gap[1, 1] ≈ 6.0
+
+        # DifferenceGMM dispatches to the H-weighted matrix; other estimators
+        # keep the plain (Z'Z)^-1 fallback.
+        diff_data_h = merge(diff_data, (panel_info=panel_info_h, n_groups=2))
+        W_ab = DynamicPanelModels.initial_weight_matrix(DifferenceGMM(), Z, diff_data_h)
+        @test W_ab ≈ inv(H / 2)
+        W_plain = DynamicPanelModels.initial_weight_matrix(SystemGMM(), Z, diff_data_h)
+        @test W_plain ≈ inv(Matrix(Z' * Z))
+    end
+
+    # Regression guard for the densify-once fix in calculate_clustered_weight_matrix
+    # (previously row-sliced a sparse Z per cluster): checks the actual numeric
+    # output against an independently-computed per-cluster sum of outer products.
+    @testset "calculate_clustered_weight_matrix numeric" begin
+        Z_cw = sparse(reshape([1.0, 1, 1, 1, 2, 2, 2, 2], 4, 2))
+        res_cw = [0.1, -0.2, 0.3, -0.1]
+        Ω = DynamicPanelModels.calculate_clustered_weight_matrix(Z_cw, res_cw, panel_info, 2)
+        Zm = Matrix(Z_cw)
+        c1 = Zm[1:2, :]' * res_cw[1:2]
+        c2 = Zm[3:4, :]' * res_cw[3:4]
+        Ω_expected = c1 * c1' + c2 * c2'
+        @test Ω ≈ Ω_expected
+
+        # Guard that the `ranges` kwarg is actually consumed, not silently
+        # ignored in favor of recomputing _cluster_ranges(panel_info)
+        # internally: passing a deliberately different partition (one big
+        # cluster instead of two) must change the result.
+        wrong_ranges = [1:4]
+        Ω_wrong = DynamicPanelModels.calculate_clustered_weight_matrix(
+            Z_cw, res_cw, panel_info, 2; ranges=wrong_ranges
+        )
+        c_all = Zm[1:4, :]' * res_cw[1:4]
+        @test Ω_wrong ≈ c_all * c_all'
+        @test !isapprox(Ω_wrong, Ω_expected)
+    end
+
+    # Regression guard for the G1 = ZtX' * W1 hoist in _solve_gmm: the one-step
+    # coefficient must match an independent, unhoisted recomputation of the sandwich.
+    @testset "One-step coefficient matches independent computation" begin
+        result = estimate(DifferenceGMM(), diff_data; steps=1, robust=true)
+        # estimate() drops collinear instrument columns by default; replicate
+        # that step so Z matches what _solve_gmm actually saw.
+        Z = DynamicPanelModels._drop_collinear_columns(
+            DynamicPanelModels.build_instruments(DifferenceGMM(), diff_data)
+        )
+        W1 = DynamicPanelModels.initial_weight_matrix(DifferenceGMM(), Z, diff_data)
+        ZtX = Z' * X_mat
+        bread = inv(ZtX' * W1 * ZtX)
+        β_check = bread * (ZtX' * W1 * (Z' * y))
+        @test β_check ≈ result.coef atol=1e-8
     end
 
     # System GMM Mechanics

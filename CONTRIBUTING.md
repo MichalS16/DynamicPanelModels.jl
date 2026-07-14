@@ -37,7 +37,9 @@ julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add("JuliaFormatter"); using J
 
 Markdown files (README, CHANGELOG, this file) follow the rules in
 `.markdownlint.json` (line length and duplicate-heading checks are relaxed to
-accommodate the CHANGELOG's repeated `### Added` headings and HTML in badges).
+accommodate the CHANGELOG's repeated `### Added` headings and HTML in badges;
+the first-line-H1 rule is also relaxed, since Documenter's `@meta` block must
+be the literal first line of `docs/src/index.md`/`guide.md`/`api.md`).
 
 ## Building the documentation
 

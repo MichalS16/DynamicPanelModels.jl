@@ -12,7 +12,7 @@ using DataFrames
 using Random
 using Statistics
 using StatsBase: coefnames
-using LinearAlgebra: diag
+using LinearAlgebra: diag, dot
 
 """
     simulate_dynamic_panel(; N, T, rho, beta, seed)
@@ -128,7 +128,17 @@ end
 
         ar1 = ar_test(m, 1, id_vec, time_vec)
         ar2 = ar_test(m, 2, id_vec, time_vec)
-        @test 0.0 <= ar1.pvalue <= 1.0
+        # Independently recompute AR(1) from the same formula ar_test uses,
+        # rather than only bounding the p-value (which holds for any valid stat).
+        res_lag1 = DynamicPanelModels._lag_vector(m.residuals, id_vec, time_vec, 1)
+        X_lag1 = reduce(
+            hcat,
+            [DynamicPanelModels._lag_vector(m.X[:, i], id_vec, time_vec, 1) for i in axes(m.X, 2)],
+        )
+        d1 = -(m.X' * res_lag1 + X_lag1' * m.residuals)
+        expected_var1 = sum((m.residuals .* res_lag1) .^ 2) + dot(d1, m.vcov * d1)
+        expected_stat1 = dot(m.residuals, res_lag1) / sqrt(expected_var1)
+        @test isapprox(ar1.stat, expected_stat1)
         @test 0.0 <= ar2.pvalue <= 1.0
 
         # Cached accessor now works after computing via the 4-arg form
@@ -249,6 +259,68 @@ end
         @test isapprox(vcov(m_off), vcov(m_naive))
     end
 
+    @testset "SystemGMM windmeijer=false is actually honored" begin
+        # Same regression as the DifferenceGMM case above, but for SystemGMM:
+        # _model_windmeijer reads the same `windmeijer` field for both model
+        # specs, so verify the correction is actually skipped here too, not
+        # just stored on the struct.
+        m_on = fit(
+            SystemGMM(; robust=true, steps=2, windmeijer=true),
+            df;
+            formula="y ~ lag(y) + x",
+            id_col=:id,
+            time_col=:t,
+            exog=["x"],
+        )
+        m_off = fit(
+            SystemGMM(; robust=true, steps=2, windmeijer=false),
+            df;
+            formula="y ~ lag(y) + x",
+            id_col=:id,
+            time_col=:t,
+            exog=["x"],
+        )
+        @test m_on.windmeijer == true
+        @test m_off.windmeijer == false
+        @test !isapprox(vcov(m_on), vcov(m_off))
+        m_naive = fit(
+            SystemGMM(; robust=false, steps=2),
+            df;
+            formula="y ~ lag(y) + x",
+            id_col=:id,
+            time_col=:t,
+            exog=["x"],
+        )
+        @test isapprox(vcov(m_off), vcov(m_naive))
+    end
+
+    @testset "collapse and max_lags actually change the fitted result" begin
+        # Regression guard for the CLAUDE.md anti-pattern of testing a kwarg
+        # only via instrument-matrix column counts: confirm collapse=true and
+        # a tight max_lags actually change the coefficients/vcov reaching the
+        # user through fit(), not just the intermediate instrument matrix.
+        spec = DifferenceGMM(; robust=true, steps=2)
+        m_full = fit(spec, df; formula="y ~ lag(y) + x", id_col=:id, time_col=:t, exog=["x"])
+        m_collapsed = fit(
+            spec, df; formula="y ~ lag(y) + x", id_col=:id, time_col=:t, exog=["x"], collapse=true
+        )
+        m_capped = fit(
+            spec, df; formula="y ~ lag(y) + x", id_col=:id, time_col=:t, exog=["x"], max_lags=1
+        )
+
+        @test ninstruments(m_collapsed) < ninstruments(m_full)
+        @test !isapprox(coef(m_full), coef(m_collapsed))
+        @test !isapprox(vcov(m_full), vcov(m_collapsed))
+
+        @test ninstruments(m_capped) < ninstruments(m_full)
+        @test !isapprox(coef(m_full), coef(m_capped))
+        @test !isapprox(vcov(m_full), vcov(m_capped))
+
+        # Collapsed instruments still recover the true parameters reasonably
+        @test isapprox(coef(m_collapsed)[1], 0.5; atol=0.2)
+        @test isapprox(coef(m_collapsed)[2], 0.8; atol=0.2)
+    end
+
     @testset "is_robust / is_windmeijer report distinct, correct flags" begin
         m_1step_robust = fit(
             DifferenceGMM(; robust=true, steps=1),
@@ -336,5 +408,21 @@ end
         # guards against (which manifested as p -> 1 from inflated variance,
         # not spurious low p-values).
         @test ar2.pvalue > 0.01
+    end
+
+    @testset "One-step Sargan J-statistic has the right chi-squared scale" begin
+        # Guards against the missing Arellano-Bond H matrix / N^-1 scaling bug,
+        # which left this near zero instead of near its degrees of freedom.
+        sargan_df = simulate_dynamic_panel(; N=400, T=8, rho=0.5, beta=0.8, seed=11)
+        m = fit(
+            DifferenceGMM(; robust=true, steps=1),
+            sargan_df;
+            formula="y ~ lag(y) + x",
+            id_col=:id,
+            time_col=:t,
+            exog=["x"],
+        )
+        sargan = sargan_test(m)
+        @test sargan.stat > 0.2 * sargan.dof
     end
 end

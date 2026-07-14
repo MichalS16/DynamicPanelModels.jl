@@ -80,7 +80,6 @@ using Distributions
 
         # Check truncation
         @test occursin("...", output)
-        @test length(filter(c -> c == '.', output)) >= 3
 
         # Check Sargan Test
         @test occursin("Sargan/Hansen test", output)
@@ -90,6 +89,13 @@ using Distributions
 
         # Check Footer
         @test occursin("For full diagnostics", output)
+    end
+
+    # Regression test: the Sargan/Hansen "H0 rejected" branch (low p-value)
+    # must also be reachable, not just the "not rejected" default mock above.
+    @testset "Sargan/Hansen hint logic" begin
+        @test DynamicPanelModels._sargan_hint(0.20) == "instruments are valid; not rejected"
+        @test DynamicPanelModels._sargan_hint(0.01) == "H0 rejected; instruments may be invalid"
     end
 
     # Regression test: the "Std. Errors:" line must reflect `robust`/`windmeijer`

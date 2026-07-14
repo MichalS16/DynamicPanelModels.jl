@@ -206,7 +206,7 @@ Summarize the coefficients of a dynamic panel GMM model.
 - `level::Real=0.95`: Confidence level for intervals (default 0.95).
 
 # Returns
-- `StatsAPI.CoefTable`: Table with columns `Estimate`, `Std. Error`, `z value`, 
+- `StatsBase.CoefTable`: Table with columns `Estimate`, `Std. Error`, `z value`,
   `Pr(>|z|)`, `Lower`, `Upper`, including significance stars for p-values.
 """
 function StatsAPI.coeftable(model::DynamicPanelResult; level::Real=0.95)

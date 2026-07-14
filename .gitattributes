@@ -1,0 +1,9 @@
+* text=auto eol=lf
+
+*.jl text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+
+*.ipynb text eol=lf -diff

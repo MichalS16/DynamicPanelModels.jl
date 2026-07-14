@@ -3,19 +3,22 @@
 # libraries
 using Test
 using DynamicPanelModels
+using StatsAPI
 using LinearAlgebra
 using Statistics
+using Distributions: Normal, cdf
+using Random
 using SparseArrays
 
 @testset "Diagnostics" begin
     # Create a mock DynamicPanelResult
+    Random.seed!(42)
     n_obs = 15
     n_groups = 5
     id_vec = repeat(1:5, inner=3)
     time_vec = repeat(2:4, outer=5)
     y = rand(n_obs)
     X = rand(n_obs, 2)
-    Z = spzeros(n_obs, 10)
     residuals = randn(n_obs)
     fitted = y .- residuals
     coef = [0.5, -0.2]
@@ -23,25 +26,36 @@ using SparseArrays
     j_stat = 5.0
     j_pval = 0.20
 
-    # Construct the object
-    model = DynamicPanelResult(
-        coef,
-        vcov,
-        residuals,
-        fitted,
-        n_obs,
-        n_groups,
-        10,
-        ["L.y", "x1"],
-        X,
-        y,
-        Z,
-        Matrix{Float64}(I, 10, 10),
-        j_stat,
-        j_pval,
-        false,
-        Dict{Symbol,Any}(:method => "Mock", :formula => "y ~ x"),
+    # Keyword mock builder — each testset states only what it varies.
+    function mock_result(;
+        res=residuals,
+        fitted_vals=fitted,
+        nobs=n_obs,
+        n_inst=10,
+        j=j_stat,
+        jp=j_pval,
+        metadata=Dict{Symbol,Any}(:method => "Mock", :formula => "y ~ x"),
     )
+        return DynamicPanelResult(
+            coef,
+            vcov,
+            res,
+            fitted_vals,
+            nobs,
+            n_groups,
+            n_inst,
+            ["L.y", "x1"],
+            X,
+            y,
+            spzeros(nobs, n_inst),
+            Matrix{Float64}(I, n_inst, n_inst),
+            j,
+            jp;
+            metadata=metadata,
+        )
+    end
+
+    model = mock_result()
 
     # Sargan J-Test
     @testset "Sargan Test" begin
@@ -54,37 +68,28 @@ using SparseArrays
         @test sargan.pvalue == j_pval
 
         # Just-identified (instruments == regressors): df <= 0 -> trivial pass
-        model_justid = DynamicPanelResult(
-            coef,
-            vcov,
-            residuals,
-            fitted,
-            n_obs,
-            n_groups,
-            2,
-            ["L.y", "x1"],
-            X,
-            y,
-            spzeros(n_obs, 2),
-            Matrix{Float64}(I, 2, 2),
-            j_stat,
-            j_pval,
-            false,
-            Dict{Symbol,Any}(:method => "Mock"),
-        )
-        sj = sargan_test(model_justid)
+        sj = sargan_test(mock_result(; n_inst=2))
         @test sj.dof == 0
         @test sj.pvalue == 1.0
     end
 
     # Arellano-Bond AR Test
     @testset "Arellano-Bond AR Test" begin
-        # Test AR(1)
+        # Test AR(1) against an independently-computed z-statistic (not just a
+        # tautological [0,1] bound on the p-value).
         ar1 = ar_test(model, 1, id_vec, time_vec)
         @test ar1 isa DynamicPanelTest
         @test ar1.test_name == "Arellano-Bond AR(1)"
         @test !isnan(ar1.stat)
-        @test 0.0 <= ar1.pvalue <= 1.0
+        res_lag = DynamicPanelModels._lag_vector(residuals, id_vec, time_vec, 1)
+        X_lag = reduce(
+            hcat, [DynamicPanelModels._lag_vector(X[:, i], id_vec, time_vec, 1) for i in axes(X, 2)]
+        )
+        d = -(X' * res_lag + X_lag' * residuals)
+        expected_var = sum((residuals .* res_lag) .^ 2) + dot(d, vcov * d)
+        expected_stat = dot(residuals, res_lag) / sqrt(expected_var)
+        @test isapprox(ar1.stat, expected_stat)
+        @test isapprox(ar1.pvalue, 2.0 * (1.0 - cdf(Normal(), abs(expected_stat))))
 
         # Test AR(2)
         ar2 = ar_test(model, 2, id_vec, time_vec)
@@ -111,6 +116,14 @@ using SparseArrays
 
         # Dimension mismatch: R columns must equal number of coefficients
         @test_throws ErrorException wald_test(model, [1.0 0.0 0.0], [0.5])
+
+        # Null is false (R*β ≠ r): stat and p-value should reject, matching an
+        # independently-computed statistic, not just fall in [0,1] by construction.
+        r_false = [0.0]
+        wald_false = wald_test(model, R, r_false)
+        expected_stat = ((R * coef - r_false)' * inv(R * vcov * R') * (R * coef - r_false))[1]
+        @test isapprox(wald_false.stat, expected_stat)
+        @test wald_false.pvalue < 0.01
     end
 
     # Jarque-Bera Test
@@ -121,14 +134,27 @@ using SparseArrays
         @test jb.test_name == "Jarque-Bera"
         @test jb.dof == 2
         @test 0.0 <= jb.pvalue <= 1.0
+
+        # Large i.i.d. Gaussian sample: normality should not be rejected.
+        Random.seed!(1)
+        jb_gauss = jarque_bera_test(
+            mock_result(; res=randn(5000), fitted_vals=zeros(5000), nobs=5000)
+        )
+        @test jb_gauss.pvalue > 0.01
     end
 
     # Heuristics Checks
     @testset "Heuristics" begin
         # Run Pseudo R²
-        r2 = goodness_of_fit(model)
-        @test r2 isa Float64
-        @test 0.0 <= r2 <= 1.0
+        gof = goodness_of_fit(model)
+        @test gof isa Float64
+        @test 0.0 <= gof <= 1.0
+
+        # goodness_of_fit delegates to StatsAPI.r2 (regression guard for that fix)
+        @test goodness_of_fit(model) == StatsAPI.r2(model)
+
+        # Perfect fit: fitted == y -> r2 == 1
+        @test isapprox(goodness_of_fit(mock_result(; res=zeros(n_obs), fitted_vals=y)), 1.0)
 
         # Run Instrument Proliferation Check
         msg = check_proliferation(model)
@@ -138,28 +164,8 @@ using SparseArrays
 
     # Difference-in-Hansen (C statistic) Test
     @testset "Difference-in-Hansen Test" begin
-        # Local mock builder: varies only instrument count, J statistic, and n_obs.
-        mk(; n_inst, j=3.0, nobs=n_obs) = DynamicPanelResult(
-            coef,
-            vcov,
-            residuals,
-            fitted,
-            nobs,
-            n_groups,
-            n_inst,
-            ["L.y", "x1"],
-            X,
-            y,
-            spzeros(nobs, n_inst),
-            Matrix{Float64}(I, n_inst, n_inst),
-            j,
-            0.5,
-            false,
-            Dict{Symbol,Any}(:method => "Mock", :formula => "y ~ x"),
-        )
-
         # Unrestricted model: same sample (n_obs), one extra instrument, lower J
-        dh = diff_hansen_test(model, mk(; n_inst=11))
+        dh = diff_hansen_test(model, mock_result(; n_inst=11, j=3.0))
         @test dh isa DynamicPanelTest
         @test dh.test_name == "Difference-in-Hansen (C)"
         @test dh.dof == 1
@@ -167,15 +173,42 @@ using SparseArrays
         @test 0.0 <= dh.pvalue <= 1.0
 
         # Not nested: unrestricted has fewer/equal instruments -> error
-        @test_throws ErrorException diff_hansen_test(model, mk(; n_inst=10))
+        @test_throws ErrorException diff_hansen_test(model, mock_result(; n_inst=10))
 
         # Different sample size (e.g. DifferenceGMM vs SystemGMM) -> error
-        @test_throws ErrorException diff_hansen_test(model, mk(; n_inst=11, nobs=n_obs + 5))
+        @test_throws ErrorException diff_hansen_test(
+            model, mock_result(; n_inst=11, nobs=n_obs + 5)
+        )
 
         # Negative naive C is clipped to a non-rejection (C=0, p=1.0), not NaN
-        dh_neg = diff_hansen_test(model, mk(; n_inst=11, j=j_stat + 10.0))
+        dh_neg = diff_hansen_test(model, mock_result(; n_inst=11, j=j_stat + 10.0))
         @test dh_neg.stat == 0.0
         @test dh_neg.pvalue == 1.0
+
+        # df_u - df_r == 0 (extra instruments in `unrestricted` exactly offset by
+        # extra regressors, so it isn't more over-identified than `restricted`):
+        # trivial pass, not a Chisq(0) error.
+        unrestricted_3reg = DynamicPanelResult(
+            [0.5, -0.2, 0.1],
+            Matrix(0.01 * I(3)),
+            residuals,
+            fitted,
+            n_obs,
+            n_groups,
+            12,
+            ["L.y", "x1", "x2"],
+            hcat(X, X[:, 1]),
+            y,
+            spzeros(n_obs, 12),
+            Matrix{Float64}(I, 12, 12),
+            3.0,
+            0.5,
+            false,
+            Dict{Symbol,Any}(:method => "Mock", :formula => "y ~ x"),
+        )
+        dh_zero_df = diff_hansen_test(mock_result(; n_inst=11, j=3.0), unrestricted_3reg)
+        @test dh_zero_df.dof == 0
+        @test dh_zero_df.pvalue == 1.0
     end
 
     # Diagnose Wrapper
@@ -198,23 +231,8 @@ using SparseArrays
         @test !haskey(results_skip, :ar1)
 
         # With :panel_info in metadata, id/time are auto-extracted -> AR tests run
-        model_pi = DynamicPanelResult(
-            coef,
-            vcov,
-            residuals,
-            fitted,
-            n_obs,
-            n_groups,
-            10,
-            ["L.y", "x1"],
-            X,
-            y,
-            Z,
-            Matrix{Float64}(I, 10, 10),
-            j_stat,
-            j_pval,
-            false,
-            Dict{Symbol,Any}(
+        model_pi = mock_result(;
+            metadata=Dict{Symbol,Any}(
                 :method => "Mock",
                 :panel_info => [(id=id_vec[i], time=time_vec[i]) for i in 1:n_obs],
             ),
@@ -222,5 +240,13 @@ using SparseArrays
         results_pi = diagnose(model_pi)
         @test haskey(results_pi, :ar1)
         @test haskey(results_pi, :ar2)
+
+        # Regression guard: diagnose() must not clobber ar_test's own get!-based
+        # cache with a fresh Dict — a prior bug overwrote :ar_tests unconditionally.
+        model_cache = mock_result()
+        pre = ar_test(model_cache, 1, id_vec, time_vec)
+        results_cache = diagnose(model_cache; id=id_vec, time=time_vec)
+        @test results_cache[:ar1] === pre
+        @test ar_test(model_cache, 1) === pre
     end
 end

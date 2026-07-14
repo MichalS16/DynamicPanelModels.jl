@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-07-14
+
+### Added
+
+- `lag` documented in `docs/src/api.md` (it was exported but missing from the
+  API reference).
+- Behavioral regression tests: `collapse`/`max_lags` are now verified to
+  actually change `fit`'s returned coefficients/vcov (not just the
+  intermediate instrument-matrix column count), and `SystemGMM(windmeijer=false)`
+  is now verified to skip the correction the same way the existing
+  `DifferenceGMM` case does.
+
+### Changed
+
+- `DifferenceGMM`/`SystemGMM` are now generated from a shared
+  `@dynpanel_spec` macro to remove duplicated boilerplate between the two
+  model spec structs; fields and behavior are unchanged.
+
+### Fixed
+
+- `DifferenceGMM`'s one-step weighting matrix used plain `(Z'Z)^-1` instead of
+  the Arellano-Bond (1991) `(Z'HZ)^-1` (`H` reflecting the MA(1) structure of
+  differenced homoskedastic errors). Coefficients were only mildly affected,
+  but the one-step Sargan/Hansen J-statistic was biased downward by roughly a
+  factor of the number of groups. Validated against the EmplUK dataset from
+  the original paper (Table 4): one-step Sargan chi2(25) now ≈70.9 vs. the
+  paper's 65.8, versus ≈0.5 before the fix.
+- The new `DifferenceGMM` weighting-matrix code re-densified the sparse
+  instrument matrix once per individual instead of once upfront, and called
+  `Matrix()` twice on the same slice; fixed to match the existing
+  densify-once pattern already used elsewhere in the solver. The
+  cluster-boundary-walking loop this needed was also duplicated three times
+  across the file; extracted into a shared, memoized `_cluster_ranges` helper
+  (results threaded via a `ranges` keyword so callers don't recompute them).
+- `calculate_clustered_weight_matrix`/`calculate_windmeijer_correction` now
+  guard that an explicitly passed `ranges` keyword argument is actually
+  consumed, instead of silently ignoring it.
+- Added a genuine (non-tautological) Windmeijer correction regression test
+  against a hand-computed expected value, replacing a check that only
+  verified internal wiring.
+- `_lag_vector`'s `(id, time) => row` index map was rebuilt from scratch for
+  every regressor column in `ar_test` (once per column, all with `Any`-typed
+  Dict keys causing boxing on every insert/lookup); it is now built once per
+  `ar_test` call, concretely typed on `eltype(id)`/`eltype(time)`, and reused
+  across all columns.
+- `_solve_gmm` densified the instrument matrix `Z` unconditionally, even on
+  the one-step, non-robust path where the densified copy is never used
+  (`calculate_clustered_weight_matrix` is only called when `steps == 2` or
+  `robust`); it is now only densified when actually needed.
+
 ## [0.3.0] — 2026-07-08
 
 ### Added
@@ -43,5 +93,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs, `.JuliaFormatter.toml`, `CHANGELOG.md`, `CONTRIBUTING.md`, and integration
   tests against a simulated panel with known parameters.
 
-[Unreleased]: https://github.com/MichalS16/DynamicPanelModels/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/MichalS16/DynamicPanelModels/releases/tag/v0.3.0
+[Unreleased]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/MichalS16/DynamicPanelModels.jl/releases/tag/v0.3.0

@@ -22,6 +22,19 @@ function significance_stars(p::Real)
 end
 
 """
+    _sargan_hint(j_pval::Real)
+
+Interpretation hint for a Sargan/Hansen overidentification test at the 5% level.
+"""
+function _sargan_hint(j_pval::Real)
+    return if j_pval > 0.05
+        "instruments are valid; not rejected"
+    else
+        "H0 rejected; instruments may be invalid"
+    end
+end
+
+"""
     Base.show(io::IO, model::DynamicPanelResult)
 
 Display a `DynamicPanelResult` in a concise Stata-like summary table with adaptive column widths.
@@ -77,7 +90,6 @@ function Base.show(io::IO, model::DynamicPanelResult)
     println(io, sep)
 
     # Coefficient Table
-    row_fmt = "  %-$(col_width)s %12.5f %12.5f %10.4f %10.4f %-3s\n"
     for i in eachindex(names)
         # Extract values
         est = ct.cols[1][i]
@@ -109,12 +121,7 @@ function Base.show(io::IO, model::DynamicPanelResult)
         @printf(io, "    chi2(%d) = %.4f (p = %.4f)\n", dof_j, model.j_stat, model.j_pval)
 
         # Interpretation Hint
-        hint = if model.j_pval > 0.05
-            "instruments are valid; not rejected"
-        else
-            "H0 rejected; instruments may be invalid"
-        end
-        println(io, "    (H0: $hint at 5%)")
+        println(io, "    (H0: $(_sargan_hint(model.j_pval)) at 5%)")
     end
 
     # Diagnostics Hint

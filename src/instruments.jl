@@ -51,6 +51,23 @@ end
 # Map each panel time period to its 1-based index in the sorted `valid_times`.
 _make_time_map(all_times) = Dict(t => i for (i, t) in enumerate(all_times))
 
+# Look up `lag_time` for individual `c_id` in `values_by_id` (a Dict{id, Dict{time, val}}
+# as built by get_diff_data); if present and nonzero/non-NaN, push (row, col, value) into
+# the sparse-matrix triplet vectors. Shared by the three build_instruments methods below,
+# which otherwise repeat this exact guard.
+function _push_instrument!(rows, cols, vals, values_by_id, c_id, lag_time, i, col)
+    haskey(values_by_id, c_id) || return nothing
+    indiv_data = values_by_id[c_id]
+    haskey(indiv_data, lag_time) || return nothing
+    val = indiv_data[lag_time]
+    if !isnan(val) && val != 0.0
+        push!(rows, i)
+        push!(cols, col)
+        push!(vals, val)
+    end
+    return nothing
+end
+
 """
     build_instruments(model::DifferenceGMM, diff_data::NamedTuple; collapse=false, max_lags=999)
 
@@ -65,7 +82,8 @@ Construct the Arellano-Bond (1991) instrument matrix for Difference GMM.
     - `valid_times`: Vector of time periods.
 - `collapse::Bool=false`: Collapse instruments to one column per lag.
 - `max_lags::Int=999`: Maximum number of lags (count) per period.
-- `min_lag::Int=1`, `max_lag::Int=typemax(Int)`: bounds on the instrument lag order.
+- `min_lag::Int=1`: Minimum instrument lag order.
+- `max_lag::Int=typemax(Int)`: Maximum instrument lag order.
 
 # Returns
 - `SparseMatrixCSC{Float64}`: Sparse instrument matrix for GMM estimation.
@@ -103,6 +121,9 @@ function _build_ab_instruments(
     min_lag::Int=1,
     max_lag::Int=typemax(Int),
 )
+    min_lag > max_lag && error("min_lag ($min_lag) must be <= max_lag ($max_lag).")
+    max_lags < 1 && error("max_lags must be >= 1, got $max_lags.")
+
     # Unpack diff_data
     panel_info = diff_data.panel_info
     n_obs = diff_data.n_obs
@@ -155,20 +176,11 @@ function _build_ab_instruments(
         c_id, c_time = row_info.id, row_info.time
         t_idx = time_map[c_time]
         t_idx < first_t && continue
-        indiv_data = id_time_to_y[c_id]
 
         for (pos, l) in enumerate(used_ls(t_idx))
             lag_time_val = all_times[t_idx - offset - l]
-            if haskey(indiv_data, lag_time_val)
-                z_val = indiv_data[lag_time_val]
-                if !isnan(z_val) && z_val != 0.0
-                    target_col =
-                        collapse ? ((offset + l) - base + 1) : (col_offsets[t_idx] + pos - 1)
-                    push!(rows, i)
-                    push!(cols, target_col)
-                    push!(vals, z_val)
-                end
-            end
+            target_col = collapse ? ((offset + l) - base + 1) : (col_offsets[t_idx] + pos - 1)
+            _push_instrument!(rows, cols, vals, id_time_to_y, c_id, lag_time_val, i, target_col)
         end
     end
 
@@ -196,9 +208,18 @@ Construct the System GMM (Blundell-Bond) instrument matrix by combining:
 # Returns
 - `SparseMatrixCSC{Float64}`: Combined instrument matrix for difference and level equations.
 """
-function build_instruments(model::SystemGMM, diff_data::NamedTuple; kwargs...)
+function build_instruments(
+    model::SystemGMM,
+    diff_data::NamedTuple;
+    collapse::Bool=false,
+    max_lags::Int=999,
+    min_lag::Int=1,
+    max_lag::Int=typemax(Int),
+)
     # Build Difference Equation Instruments
-    Z_diff = _build_ab_instruments(diff_data; kwargs...)
+    Z_diff = _build_ab_instruments(
+        diff_data; collapse=collapse, max_lags=max_lags, min_lag=min_lag, max_lag=max_lag
+    )
     Z_diff = append_exog_instruments(Z_diff, diff_data; is_level=false)
     panel_info = diff_data.panel_info
     n_total_obs = diff_data.n_obs
@@ -213,7 +234,6 @@ function build_instruments(model::SystemGMM, diff_data::NamedTuple; kwargs...)
     end
 
     # Build Level Equation Instruments
-    collapse = get(kwargs, :collapse, false)
     n_level_cols = collapse ? 1 : (T_max - 2)
     rows_lev, cols_lev, vals_lev = Int[], Int[], Float64[]
 
@@ -227,20 +247,10 @@ function build_instruments(model::SystemGMM, diff_data::NamedTuple; kwargs...)
         # Only t >= 3 have level instruments
         t_idx < 3 && continue
         prev_time_val = all_times[t_idx - 1]
-
-        # Check if instrument exists
-        if haskey(id_time_to_diff_y, c_id)
-            indiv_diffs = id_time_to_diff_y[c_id]
-            if haskey(indiv_diffs, prev_time_val)
-                inst_val = indiv_diffs[prev_time_val]
-                if !isnan(inst_val) && inst_val != 0.0
-                    push!(rows_lev, i)
-                    target_col = collapse ? 1 : (t_idx - 2)
-                    push!(cols_lev, target_col)
-                    push!(vals_lev, inst_val)
-                end
-            end
-        end
+        target_col = collapse ? 1 : (t_idx - 2)
+        _push_instrument!(
+            rows_lev, cols_lev, vals_lev, id_time_to_diff_y, c_id, prev_time_val, i, target_col
+        )
     end
 
     # Construct sparse matrix for level instruments
@@ -281,17 +291,7 @@ function build_instruments(model::AndersonHsiao, diff_data::NamedTuple; kwargs..
         t_idx = time_map[c_time]
         t_idx < 3 && continue
         lag_2_time = all_times[t_idx - 2]
-        indiv_data = id_time_to_y[c_id]
-
-        # Check if instrument exists
-        if haskey(indiv_data, lag_2_time)
-            z_val = indiv_data[lag_2_time]
-            if !isnan(z_val) && z_val != 0.0
-                push!(rows, i)
-                push!(cols, 1)
-                push!(vals, z_val)
-            end
-        end
+        _push_instrument!(rows, cols, vals, id_time_to_y, c_id, lag_2_time, i, 1)
     end
 
     Z = sparse(rows, cols, vals, n_obs, 1)
