@@ -1,6 +1,6 @@
 name = "DynamicPanelModels"
 uuid = "2feff84d-53dc-4a9a-aa25-96ecd7dbbe5b"
-version = "0.3.1"
+version = "0.3.2"
 authors = ["MichalS16"]
 
 [deps]

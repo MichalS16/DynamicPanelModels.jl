@@ -161,14 +161,8 @@ using DynamicPanelModels
         # Under-identified: n_obs (4) >= regressors (4) but instruments (3) < regressors
         X_wide = rand(4, 4)
         diff_underid = merge(diff_data, (X=X_wide, coef_names=["x$i" for i in 1:4]))
-        err_underid = try
-            estimate(DifferenceGMM(), diff_underid)
-            nothing
-        catch e
-            e
-        end
-        @test err_underid isa ErrorException
-        @test occursin("under-identified", err_underid.msg)
+        result_underid = @test_throws ErrorException estimate(DifferenceGMM(), diff_underid)
+        @test occursin("under-identified", result_underid.value.msg)
 
         # Too few observations (n_obs < regressors)
         X_small = rand(2, 3)
@@ -183,14 +177,16 @@ using DynamicPanelModels
                 coef_names=["x1", "x2", "x3"],
             ),
         )
-        err_small = try
-            estimate(DifferenceGMM(), diff_small)
-            nothing
-        catch e
-            e
-        end
-        @test err_small isa ErrorException
-        @test occursin("Insufficient observations", err_small.msg)
+        result_small = @test_throws ErrorException estimate(DifferenceGMM(), diff_small)
+        @test occursin("Insufficient observations", result_small.value.msg)
+
+        # Collinear regressors (rank(X) < n_regressors) must be rejected with
+        # an actionable message, not surface as a bare
+        # LinearAlgebra.SingularException deep inside the GMM solver.
+        X_collinear = hcat(X_mat, 2.0 .* X_mat)
+        diff_collinear = merge(diff_data, (X=X_collinear, coef_names=["L.y", "L.y2"]))
+        result_collinear = @test_throws ErrorException estimate(DifferenceGMM(), diff_collinear)
+        @test occursin("collinear", result_collinear.value.msg)
     end
 
     # Guards the Arellano-Bond (1991, p.279) one-step weighting matrix:

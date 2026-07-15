@@ -55,7 +55,9 @@ display(model)
 ## Diagnostics. Compare against Table 4, column (a2): n_{t-1}=0.629,
 ## n_{t-2}=-0.065, w_t=-0.526, k_t=0.278, ys_t=0.592, Sargan chi2(25)=31.4 —
 ## the package's estimates and Sargan statistic land close to the published
-## values, and neither AR(1) nor AR(2) points to misspecification.
+## values. AR(1) is expected to be significant after differencing (that's not
+## a misspecification signal, see the Getting Started guide); AR(2) is not
+## significant, which is the actual check for misspecification here.
 diagnose(model)
 
 ## Visualization

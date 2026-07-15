@@ -157,4 +157,13 @@ using DynamicPanelModels
             @test Z[1:4, end] == X[1:4, 1]
         end
     end
+
+    # A model type with no build_instruments specialization must raise an
+    # informative error (naming the offending type), not a generic MethodError.
+    struct _UnimplementedModel <: AbstractDynamicPanelModel end
+    @testset "Unimplemented model falls back to an informative error" begin
+        result = @test_throws ErrorException build_instruments(_UnimplementedModel(), diff_data)
+        @test occursin("not implemented", result.value.msg)
+        @test occursin("_UnimplementedModel", result.value.msg)
+    end
 end

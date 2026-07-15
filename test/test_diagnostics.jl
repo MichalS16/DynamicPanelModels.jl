@@ -98,6 +98,15 @@ using SparseArrays
 
         # Mismatched dimensions
         @test_throws ErrorException ar_test(model, 1, id_vec[1:10], time_vec[1:10])
+
+        # Degenerate case: all-zero residuals make both the moment variance and
+        # the estimation-uncertainty term exactly zero, so total_variance <= 0
+        # must short-circuit to a trivial (NaN stat, dof=0, NaN p-value) result
+        # instead of dividing by zero / taking sqrt of a negative number.
+        ar_zero = ar_test(mock_result(; res=zeros(n_obs)), 1, id_vec, time_vec)
+        @test isnan(ar_zero.stat)
+        @test ar_zero.dof == 0
+        @test isnan(ar_zero.pvalue)
     end
 
     # Wald Test
@@ -124,6 +133,16 @@ using SparseArrays
         expected_stat = ((R * coef - r_false)' * inv(R * vcov * R') * (R * coef - r_false))[1]
         @test isapprox(wald_false.stat, expected_stat)
         @test wald_false.pvalue < 0.01
+
+        # Near-singular restriction matrix: duplicate rows make R*V*R' exactly
+        # rank-deficient (cond == Inf > 1e12), which must trigger the numerical
+        # regularization branch rather than `inv` throwing a SingularException.
+        R_singular = [1.0 0.0; 1.0 0.0]
+        r_singular = [0.5, 0.5]
+        wald_singular = wald_test(model, R_singular, r_singular)
+        @test wald_singular isa DynamicPanelTest
+        @test isfinite(wald_singular.stat)
+        @test isfinite(wald_singular.pvalue)
     end
 
     # Jarque-Bera Test

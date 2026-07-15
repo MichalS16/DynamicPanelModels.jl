@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] — 2026-07-15
+
+### Added
+
+- Regression tests for three previously-uncovered defensive branches, found via
+  line-coverage inspection rather than code reading alone: `build_instruments`'s
+  abstract-model fallback (must raise an informative error, not a generic
+  `MethodError`), `ar_test`'s degenerate `total_variance <= 0` guard (all-zero
+  residuals), and `wald_test`'s near-singular `R*V*R'` regularization branch.
+
+### Fixed
+
+- `estimate` now rejects collinear regressors (`rank(X) < n_regressors`) with a
+  clear error naming the affected columns, instead of failing deep inside the
+  GMM solver with an opaque `LinearAlgebra.SingularException`. Found via
+  adversarial testing (e.g. a regressor and an exact rescaling of it), not
+  previously covered by any test.
+- `examples/example.jl`'s diagnostics comment mischaracterized the AR(1)/AR(2)
+  results: AR(1) is *expected* to be significant after differencing (not a
+  misspecification signal, per the Getting Started guide); only AR(2)
+  significance would indicate misspecification. Reworded for precision after
+  running the example against live data and checking the actual output.
+
+### Performance
+
+- `calculate_clustered_weight_matrix` and `_ab_h_weight_matrix`'s per-cluster
+  accumulation loops used non-mutating `A += ...`, reallocating the full
+  `n_instruments × n_instruments` matrix on every individual/cluster instead of
+  accumulating in place; changed to `A .+= ...` (identical result, no
+  behavior change). Benchmarked on simulated panels: roughly 20-28% less
+  memory allocated by `fit` at N=20,000-50,000 (e.g. two-step `DifferenceGMM`
+  at N=50,000, T=10: ~4.08 GB → ~2.97 GB), confirming the README's large-N
+  performance claim under an actual adversarial/stress-test pass rather than
+  just reading the sparse-matrix code.
+
 ## [0.3.1] — 2026-07-14
 
 ### Added
@@ -93,6 +128,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs, `.JuliaFormatter.toml`, `CHANGELOG.md`, `CONTRIBUTING.md`, and integration
   tests against a simulated panel with known parameters.
 
-[Unreleased]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/MichalS16/DynamicPanelModels.jl/releases/tag/v0.3.0

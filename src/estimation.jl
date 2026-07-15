@@ -59,6 +59,10 @@ function estimate(
         error("Insufficient observations ($n_obs) for $n_regressors regressors.")
     end
 
+    # Collinear regressors can't be silently dropped like a redundant
+    # instrument column, so this errors instead of calling `_drop_collinear_columns`.
+    _check_full_rank(X, coef_names)
+
     # Build instruments
     Z = build_instruments(
         model, diff_data; collapse=collapse, max_lags=max_lags, min_lag=min_lag, max_lag=max_lag
@@ -90,6 +94,44 @@ _model_robust(model::AbstractDynamicPanelModel) = _model_field(model, :robust, t
 _model_windmeijer(model::AbstractDynamicPanelModel) = _model_field(model, :windmeijer, true)
 
 """
+    _qr_rank(F; tol=1e-9) -> Int
+
+Numerical rank from a pivoted QR factorization `F` (as produced by
+`qr(M, ColumnNorm())`): the number of `|diag(F.R)|` entries exceeding `tol`
+relative to the largest. Shared by `_drop_collinear_columns` (instrument
+matrix `Z`: drop the redundant columns) and `estimate`'s regressor check
+(matrix `X`: collinearity can't be silently dropped, so it errors instead) —
+both apply the same rank-revealing-QR/tolerance convention.
+"""
+function _qr_rank(F; tol::Real=1e-9)
+    d = abs.(diag(F.R))
+    isempty(d) && return 0
+    return count(>(tol * maximum(d)), d)
+end
+
+"""
+    _check_full_rank(X, coef_names; tol=1e-9)
+
+Ensure regressor matrix `X` has full column rank, via the same rank-revealing-QR
+tolerance convention as `_drop_collinear_columns` (used below for the instrument
+matrix `Z`). Collinear regressors can't be silently dropped like a redundant
+instrument column — a regressor's coefficient is a target of estimation, not a
+disposable moment condition — so this errors instead, naming the offending
+columns, rather than surfacing an opaque `LinearAlgebra.SingularException`
+deep inside the GMM solver.
+"""
+function _check_full_rank(X, coef_names; tol::Real=1e-9)
+    n_regressors = size(X, 2)
+    x_rank = _qr_rank(qr(X, ColumnNorm()); tol=tol)
+    if x_rank < n_regressors
+        error(
+            "Regressors are collinear (rank $x_rank < $n_regressors regressors: " *
+            "$(coef_names)). Remove or combine the collinear regressor(s).",
+        )
+    end
+end
+
+"""
     _drop_collinear_columns(Z; tol=1e-9) -> SparseMatrixCSC
 
 Return `Z` with linearly dependent columns removed (keeping, from each collinear
@@ -102,9 +144,8 @@ function _drop_collinear_columns(Z::AbstractMatrix; tol::Real=1e-9)
     p <= 1 && return Z
     M = Matrix(Z)
     F = qr(M, ColumnNorm())
-    d = abs.(diag(F.R))
-    isempty(d) && return Z
-    r = count(>(tol * maximum(d)), d)
+    r = _qr_rank(F; tol=tol)
+    r == 0 && return Z                     # degenerate: nothing to check rank against
     r == p && return Z                     # full rank: nothing to drop
     keep = sort(F.p[1:r])
     return sparse(M[:, keep])
@@ -293,7 +334,7 @@ function calculate_clustered_weight_matrix(
     Zd = _densify(Z)
     for r in ranges
         Zu_i = @view(Zd[r, :])' * @view(residuals[r])
-        A += Zu_i * Zu_i'
+        mul!(A, Zu_i, Zu_i', true, true)   # A += Zu_i * Zu_i', fused, no temporary
     end
     return A
 end
@@ -362,7 +403,10 @@ function calculate_windmeijer_correction(
         u_i = @view res1[r]
         Zu = Z_i' * u_i           # L
         ZX = Z_i' * X_i           # L×K
-        temp .+= -((Zu' * c) .* ZX .+ Zu * (ZX' * c)')
+        s = dot(Zu, c)
+        w = ZX' * c
+        temp .-= s .* ZX
+        mul!(temp, Zu, w', -1.0, 1.0)   # temp -= Zu * w', fused, no temporary
     end
 
     # D = ∂β2/∂β1 (K×K); assemble the corrected variance.
@@ -438,12 +482,23 @@ function _ab_h_weight_matrix(Z, panel_info)
     n_inst = size(Z, 2)
     A = zeros(n_inst, n_inst)
     Zd = _densify(Z)
+    ranges = _cluster_ranges(panel_info)
 
-    for r in _cluster_ranges(panel_info)
+    # Z_i'*H_i (n_inst × m) is recomputed fresh every cluster; preallocate one
+    # buffer sized to the largest cluster and reuse it via a view, rather than
+    # letting `mul!` below allocate a new temporary on every iteration.
+    maxm = maximum(r -> count(j -> !get(panel_info[j], :is_level, false), r), ranges; init=0)
+    buf = zeros(n_inst, maxm)
+
+    for r in ranges
         rows = [(j, panel_info[j].time) for j in r if !get(panel_info[j], :is_level, false)]
         isempty(rows) && continue
         idxs = first.(rows)
         times = last.(rows)
+        # `idxs` is a filtered Vector{Int}, not a UnitRange, so a view here
+        # would be a non-strided SubArray that can't dispatch to BLAS gemm for
+        # `Z_i' * H_i * Z_i` below — materializing is faster despite the copy
+        # (benchmarked: ~2x faster than @view at realistic cluster/instrument sizes).
         Z_i = Zd[idxs, :]
         m = length(idxs)
         H_i = zeros(m, m)
@@ -455,7 +510,9 @@ function _ab_h_weight_matrix(Z, panel_info)
                 end
             end
         end
-        A += Z_i' * H_i * Z_i
+        buf_view = @view buf[:, 1:m]
+        mul!(buf_view, Z_i', H_i)              # buf := Z_i'*H_i, reused across iterations
+        mul!(A, buf_view, Z_i, true, true)      # A += buf*Z_i, fused final product
     end
     return A
 end
