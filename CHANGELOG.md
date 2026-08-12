@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] — 2026-08-12
+
+### Changed
+
+- `jarque_bera_test` now computes skewness/kurtosis via `StatsBase.skewness`/
+  `StatsBase.kurtosis` instead of hand-rolled moment formulas (identical
+  result; `StatsBase.kurtosis` is excess kurtosis, so the `- 3.0` term moved
+  into the library call).
+- The three residual-standardization plot recipes (`:residuals`, `:histogram`,
+  `:qq`) now use `StatsBase.zscore` instead of a repeated
+  `(x .- mean(x)) ./ std(x)` expression.
+- `StatsAPI.nobs(model; count_groups=true)` removed — it duplicated the
+  existing `ngroups(model)` accessor. Use `ngroups(model)` for the number of
+  groups; `nobs(model)` now only returns total observations.
+
 ## [0.3.2] — 2026-07-15
 
 ### Added
@@ -128,7 +143,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs, `.JuliaFormatter.toml`, `CHANGELOG.md`, `CONTRIBUTING.md`, and integration
   tests against a simulated panel with known parameters.
 
-[Unreleased]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.3...HEAD
+[0.3.3]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/MichalS16/DynamicPanelModels.jl/releases/tag/v0.3.0

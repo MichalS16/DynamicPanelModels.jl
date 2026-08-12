@@ -59,7 +59,7 @@ using Random
         @test coef(model) === model.coef
         @test vcov(model) === model.vcov
         @test nobs(model) == n_obs
-        @test nobs(model; count_groups=true) == n_groups
+        @test ngroups(model) == n_groups
         @test dof(model) == 2
         @test dof_residual(model) == n_obs - 2
         @test residuals(model) === model.residuals

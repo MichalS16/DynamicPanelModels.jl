@@ -56,20 +56,18 @@ Return the fitted values from a dynamic panel GMM model.
 StatsAPI.fitted(model::DynamicPanelResult) = model.fitted
 
 """
-    StatsAPI.nobs(model::DynamicPanelResult; count_groups=false)
+    StatsAPI.nobs(model::DynamicPanelResult)
 
-Return the number of observations or groups in a dynamic panel GMM model.
+Return the total number of observations in a dynamic panel GMM model.
+Use `ngroups(model)` for the number of groups.
 
 # Arguments
-- `model::DynamicPanelResult`: Model result containing observations and groups.
-- `count_groups::Bool=false`: If `true`, returns number of groups; otherwise returns total observations.
+- `model::DynamicPanelResult`: Model result containing observations.
 
 # Returns
-- `Int`: Number of observations or groups.
+- `Int`: Number of observations.
 """
-function StatsAPI.nobs(model::DynamicPanelResult; count_groups=false)
-    return count_groups ? model.n_groups : model.n_obs
-end
+StatsAPI.nobs(model::DynamicPanelResult) = model.n_obs
 
 """
     StatsAPI.coefnames(model::DynamicPanelResult)
