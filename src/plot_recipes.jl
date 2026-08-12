@@ -76,7 +76,7 @@ residuals by observation index.
 @recipe function f(model::DynamicPanelResult, ::Val{:residuals})
     # Residuals Plot
     resid = model.residuals
-    std_resid = (resid .- mean(resid)) ./ std(resid)
+    std_resid = zscore(resid)
 
     title --> "Standardized Residuals"
     xguide --> "Observation Index"
@@ -174,7 +174,7 @@ with an overlaid standard normal curve to assess residual distribution.
 @recipe function f(model::DynamicPanelResult, ::Val{:histogram})
     # Data Preparation
     resid = filter(isfinite, model.residuals)
-    std_resid = (resid .- mean(resid)) ./ std(resid)
+    std_resid = zscore(resid)
 
     # Plot Settings
     title --> "Residual Density"
@@ -222,7 +222,7 @@ to assess normality.
     n = length(raw_resid)
 
     # Standardized residuals and theoretical quantiles
-    std_resid = (raw_resid .- mean(raw_resid)) ./ std(raw_resid)
+    std_resid = zscore(raw_resid)
     sorted_resid = sort(std_resid)
     probs = (1:(n .- 0.5)) ./ n
     theo_q = quantile.(Normal(), probs)

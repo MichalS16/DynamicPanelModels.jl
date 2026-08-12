@@ -257,13 +257,7 @@ function jarque_bera_test(model::DynamicPanelResult)
     # Extract residuals
     e = model.residuals
     n = length(e)
-    m = mean(e)
-    s2 = mean((e .- m) .^ 2)
-    m3 = mean((e .- m) .^ 3)
-    m4 = mean((e .- m) .^ 4)
-    skewness = m3 / s2^1.5
-    kurtosis = m4 / s2^2
-    jb_stat = (n / 6.0) * (skewness^2 + 0.25 * (kurtosis - 3.0)^2)
+    jb_stat = (n / 6.0) * (skewness(e)^2 + 0.25 * kurtosis(e)^2)
     pvalue = 1.0 - cdf(Chisq(2), jb_stat)
 
     return DynamicPanelTest("Jarque-Bera", jb_stat, 2, pvalue)
