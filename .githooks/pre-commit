@@ -1,0 +1,17 @@
+#!/bin/sh
+# Auto-format staged Julia files with JuliaFormatter (blue style) before commit.
+staged_jl=$(git diff --cached --name-only --diff-filter=ACM -- 'src/*.jl' 'test/*.jl')
+if [ -n "$staged_jl" ]; then
+    julia -e 'using Pkg; Pkg.activate(temp=true); Pkg.add("JuliaFormatter"); using JuliaFormatter; format("src"); format("test")' || exit 1
+    git add $staged_jl
+fi
+
+# Guard against accidentally staging gitignored artifacts (Manifest.toml, docs/build, *.pdf, changelog.md)
+bad=$(git diff --cached --name-only --diff-filter=ACM | grep -E '(^|/)Manifest\.toml$|^docs/build/|^docs/src/changelog\.md$|\.pdf$')
+if [ -n "$bad" ]; then
+    echo "pre-commit: refusing to commit gitignored artifact(s):"
+    echo "$bad"
+    exit 1
+fi
+
+exit 0

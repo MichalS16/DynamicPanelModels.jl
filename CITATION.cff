@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "DynamicPanelModels.jl"
+type: software
+authors:
+  - name: "MichalS16"
+repository-code: "https://github.com/MichalS16/DynamicPanelModels.jl"
+license: MIT
+version: 0.3.4
+keywords:
+  - julia
+  - econometrics
+  - panel-data
+  - GMM
+  - Arellano-Bond
+  - Blundell-Bond

@@ -1,21 +1,16 @@
 ---
 name: Bug report
-about: Something produces an error, or a plausible-looking but incorrect result
-title: ""
+about: Report incorrect behavior or an econometric formula bug
 labels: bug
 ---
 
-**Minimal reproducible example** (a small `DataFrame` and the `fit`/`estimate`
-call that triggers the problem):
+## Description
 
-```julia
+<!-- What's wrong? Include the minimal reproducing example if possible. -->
 
-```
+## Expected vs actual
 
-**Expected vs. actual result**
+## Environment
 
-**Environment** (`] status DynamicPanelModels` output):
-
-```
-
-```
+- Julia version:
+- DynamicPanelModels.jl version:

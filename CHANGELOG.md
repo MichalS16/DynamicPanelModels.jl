@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] — 2026-09-15
+
+### Added
+
+- Versioned git hooks (`.githooks/`, enable via `git config core.hooksPath
+  .githooks`): pre-commit formats staged Julia files and blocks accidentally
+  staged gitignored artifacts (`Manifest.toml`, `docs/build/`, `*.pdf`,
+  `changelog.md`); commit-msg rejects empty/wip/fixup messages on `main`;
+  pre-push runs the full test suite.
+- Dedicated Aqua quality-checks CI job (previously only ran inside the main
+  test job, not separately visible in CI status).
+- `.github/dependabot.yml` for GitHub Actions version updates (CompatHelper
+  already covered Julia package deps).
+- PR template and issue templates (bug report / feature request).
+- `CITATION.cff` for machine-readable citation.
+- `Makefile` with short aliases (`make test`, `make format`, `make docs`,
+  `make example`) for the long `julia --project=...` commands in CLAUDE.md.
+- `CONTRIBUTING.md`.
+- `benchmarks/` — ad-hoc `Chairmarks.jl` timing script for the GMM solver on
+  larger panels (N=500/5,000/50,000), not wired into CI.
+
 ## [0.3.3] — 2026-08-12
 
 ### Changed

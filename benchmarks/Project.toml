@@ -1,0 +1,5 @@
+[deps]
+Chairmarks = "0ca39b1e-fe0b-4e98-acfc-b1656634c4de"
+DataFrames = "a93c6f00-e57d-5684-b7b6-d8193f3e46c0"
+DynamicPanelModels = "2feff84d-53dc-4a9a-aa25-96ecd7dbbe5b"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
