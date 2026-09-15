@@ -262,7 +262,12 @@ end
 """
     build_instruments(model::AndersonHsiao, diff_data::NamedTuple; kwargs...)
 
-Construct the instrument matrix for the Anderson-Hsiao estimator.
+Construct the instrument matrix for the Anderson-Hsiao estimator: one lagged
+*level* of `y` per lagged-dependent-variable regressor. Under first differences
+the regressor `Δy_{i,t-k}` (formula term `lag(y, k)`) is instrumented by
+`y_{i,t-k-1}`; under forward orthogonal deviations the timing shifts by one, to
+`y_{i,t-k}` (the same `offset` convention as `_build_ab_instruments`). A formula
+with no lagged dependent variable falls back to the classic single `y_{i,t-2}`.
 
 # Arguments
 - `model::AndersonHsiao`: Anderson-Hsiao dynamic panel model object.
@@ -271,8 +276,9 @@ Construct the instrument matrix for the Anderson-Hsiao estimator.
 - `kwargs...`: Additional keyword arguments (currently ignored).
 
 # Returns
-- `SparseMatrixCSC{Float64, Int}`: Instrument matrix with one column of `y_{i,t-2}` for
-  each differenced observation, plus one column per strictly exogenous regressor.
+- `SparseMatrixCSC{Float64, Int}`: Instrument matrix with one column per
+  `lag(y, k)` regressor (`diff_data.y_lag_orders`), plus one column per strictly
+  exogenous regressor.
 """
 function build_instruments(model::AndersonHsiao, diff_data::NamedTuple; kwargs...)
     # Unpack diff_data
@@ -281,6 +287,9 @@ function build_instruments(model::AndersonHsiao, diff_data::NamedTuple; kwargs..
     id_time_to_y = diff_data.id_time_to_y
     all_times = diff_data.valid_times
     time_map = _make_time_map(all_times)
+    offset = get(diff_data, :transform, :fd) == :fod ? 0 : 1
+    orders = get(diff_data, :y_lag_orders, Int[])
+    isempty(orders) && (orders = [1])
     rows, cols, vals = Int[], Int[], Float64[]
 
     # Loop over observations
@@ -289,11 +298,13 @@ function build_instruments(model::AndersonHsiao, diff_data::NamedTuple; kwargs..
         get(row_info, :is_level, false) && continue
         c_id, c_time = row_info.id, row_info.time
         t_idx = time_map[c_time]
-        t_idx < 3 && continue
-        lag_2_time = all_times[t_idx - 2]
-        _push_instrument!(rows, cols, vals, id_time_to_y, c_id, lag_2_time, i, 1)
+        for (col, k) in enumerate(orders)
+            lag_idx = t_idx - k - offset
+            lag_idx >= 1 || continue
+            _push_instrument!(rows, cols, vals, id_time_to_y, c_id, all_times[lag_idx], i, col)
+        end
     end
 
-    Z = sparse(rows, cols, vals, n_obs, 1)
+    Z = sparse(rows, cols, vals, n_obs, length(orders))
     return append_exog_instruments(Z, diff_data; is_level=false)
 end

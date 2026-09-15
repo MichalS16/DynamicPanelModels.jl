@@ -94,6 +94,28 @@ _model_robust(model::AbstractDynamicPanelModel) = _model_field(model, :robust, t
 _model_windmeijer(model::AbstractDynamicPanelModel) = _model_field(model, :windmeijer, true)
 
 """
+    _one_step_variance(model_type, res1, n_obs, n_reg) -> Real
+
+σ² used to scale the one-step non-robust variance (`σ² * bread1`) and the
+one-step Sargan J-statistic (`e'ZWZ'e / σ²`, see `_solve_gmm`) for every
+estimator — each one-step weight matrix is only a scalar multiple of the
+moment covariance inverse, so both quantities need this explicit scale.
+
+For `DifferenceGMM`, `res1` are first-differenced residuals Δv̂, and the
+one-step weight `inv(A)` (`A = sum_i Z_i'HZ_i`) is left arbitrarily scaled
+(any positive scalar gives the same β1) — so the properly-scaled moment
+covariance is `Ω1 = σ_v̂² * A`, not `A` itself. Since `Var(Δv_it) = 2σ_v²`
+under the maintained iid-in-levels assumption, `σ_v̂²` carries an extra
+factor of 2 relative to the plain residual variance (Arellano & Bond, 1991,
+p.280). `SystemGMM`/`AndersonHsiao` use the plain `(Z'Z)^-1` one-step
+weight, which has no such structure, so no extra factor applies there.
+"""
+_one_step_variance(::DifferenceGMM, res1, n_obs, n_reg) = dot(res1, res1) / (2 * (n_obs - n_reg))
+function _one_step_variance(::AbstractDynamicPanelModel, res1, n_obs, n_reg)
+    return dot(res1, res1) / (n_obs - n_reg)
+end
+
+"""
     _qr_rank(F; tol=1e-9) -> Int
 
 Numerical rank from a pivoted QR factorization `F` (as produced by
@@ -236,7 +258,7 @@ function _solve_gmm(y, X, Z, diff_data, coef_names, steps, robust, windmeijer, m
             vcov = bread1 * (G1 * Ω_clustered * G1') * bread1
         else
             # Homoskedastic SEs
-            σ2 = dot(res1, res1) / (n_obs - n_reg)
+            σ2 = _one_step_variance(model_type, res1, n_obs, n_reg)
             vcov = σ2 * bread1
         end
     end
@@ -246,10 +268,30 @@ function _solve_gmm(y, X, Z, diff_data, coef_names, steps, robust, windmeijer, m
     fitted = X * β
     Zte = Z' * residuals
     j_stat = (Zte' * W * Zte)[1]
+    # Every one-step weight matrix here (inv(A) for DifferenceGMM, (Z'Z)^-1
+    # otherwise) is only a scalar multiple of the moment covariance inverse —
+    # Ω1 = σ̂² * A or σ̂² * Z'Z under the maintained homoskedasticity — so,
+    # unlike the two-step case (whose W2 = inv(Ω_clustered) is an actual
+    # covariance estimate), the raw quadratic form above is not yet on the
+    # asymptotic chi-squared scale: divide by σ̂² (Arellano & Bond, 1991;
+    # the classical Sargan statistic e'Z(Z'Z)^-1Z'e / σ̂² for the (Z'Z)^-1 case).
+    if steps == 1
+        j_stat /= _one_step_variance(model_type, res1, n_obs, n_reg)
+    end
 
     # Degrees of freedom for J-test = Instruments - Regressors
     df_j = size(Z, 2) - length(β)
     j_pval = df_j > 0 ? 1.0 - cdf(Chisq(df_j), j_stat) : NaN
+
+    # vcov is mathematically symmetric by construction in every branch above,
+    # but chained generic (non-Symmetric-typed) `inv()` calls don't preserve
+    # that exactly in floating point — most visible near weak identification
+    # (e.g. SystemGMM, ρ close to 1). wald_test and ar_test both read the
+    # full matrix (R*V*R', dot(x, V*x)), not just the diagonal, so a stray
+    # off-diagonal asymmetry can leak into those statistics. Symmetrize
+    # unconditionally; this is a no-op (up to float noise) whenever `vcov` is
+    # already symmetric, so it costs nothing on the common path.
+    vcov = (vcov + vcov') / 2
 
     # Compile metadata
     metadata = Dict{Symbol,Any}(
@@ -281,24 +323,6 @@ function _solve_gmm(y, X, Z, diff_data, coef_names, steps, robust, windmeijer, m
     )
 end
 
-"""
-    calculate_clustered_weight_matrix(Z, residuals, panel_info, n_groups)
-
-Compute the clustered robust moment matrix for panel data:
-
-    A = Z' Ω Z
-
-where Ω accounts for clustering within groups.
-
-# Arguments
-- `Z::AbstractMatrix`: Instrument or regressor matrix.
-- `residuals::AbstractVector`: Residuals from the model.
-- `panel_info::Vector{<:NamedTuple}`: Metadata with `.id` indicating group membership.
-- `n_groups::Integer`: Number of clusters/groups.
-
-# Returns
-- `A::Matrix`: Clustered robust moment matrix of size `(size(Z,2), size(Z,2))`.
-"""
 # Densify once: row-slicing a SparseMatrixCSC per cluster/individual is far more
 # expensive (each slice re-copies into a new sparse structure) than a single
 # upfront conversion followed by cheap `@view`s into a dense matrix.
@@ -326,6 +350,24 @@ function _cluster_ranges(panel_info)
     return ranges
 end
 
+"""
+    calculate_clustered_weight_matrix(Z, residuals, panel_info, n_groups)
+
+Compute the clustered robust moment matrix for panel data:
+
+    A = Z' Ω Z
+
+where Ω accounts for clustering within groups.
+
+# Arguments
+- `Z::AbstractMatrix`: Instrument or regressor matrix.
+- `residuals::AbstractVector`: Residuals from the model.
+- `panel_info::Vector{<:NamedTuple}`: Metadata with `.id` indicating group membership.
+- `n_groups::Integer`: Number of clusters/groups.
+
+# Returns
+- `A::Matrix`: Clustered robust moment matrix of size `(size(Z,2), size(Z,2))`.
+"""
 function calculate_clustered_weight_matrix(
     Z, residuals, panel_info, n_groups; ranges=_cluster_ranges(panel_info)
 )
@@ -468,11 +510,15 @@ function initial_weight_matrix(::AbstractDynamicPanelModel, Z, diff_data)
 end
 
 function initial_weight_matrix(::DifferenceGMM, Z, diff_data)
-    # A_N = N^-1 * sum_i Z_i'HZ_i (Arellano & Bond, 1991, eq. 3-4); the N^-1 factor
-    # cancels out of the coefficient estimate but is required for the one-step
-    # Sargan/Hansen J-statistic to have its asymptotic chi-squared scale.
-    N = diff_data.n_groups
-    return inv(posdef_fix(_ab_h_weight_matrix(Z, diff_data.panel_info) / N))
+    # A = sum_i Z_i'HZ_i (Arellano & Bond, 1991, eq. 3-4), deliberately NOT
+    # divided by N here: β1 and the one-step robust (sandwich) SEs are exactly
+    # invariant to any positive scalar multiple of the weight matrix, so a
+    # stray N-scaling was (wrongly) considered harmless. It isn't: the
+    # non-robust one-step variance and the Sargan/Hansen J-statistic are NOT
+    # scale-invariant, and both need the correctly scaled Ω1 = σ_v̂² * A, not
+    # an arbitrarily-rescaled A. That scaling is applied where it matters, in
+    # `_solve_gmm` (see `_one_step_variance`), not here.
+    return inv(posdef_fix(_ab_h_weight_matrix(Z, diff_data.panel_info)))
 end
 
 # Z'HZ summed over individuals, where H_i[t,s] = 2 (t==s), -1 (calendar-adjacent

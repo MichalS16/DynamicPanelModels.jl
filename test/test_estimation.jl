@@ -90,6 +90,22 @@ using DynamicPanelModels
         # Non-robust one-step differs from clustered-robust one-step in general
         result_rob = estimate(DifferenceGMM(), diff_data; steps=1, robust=true)
         @test result.vcov != result_rob.vcov
+
+        # Independent formula check for the non-robust one-step variance:
+        # σ_v̂² * (X'Z A^-1 Z'X)^-1 with A = ΣZ_i'HZ_i (unnormalized) and
+        # σ_v̂² = e'e / (2*(n_obs - n_reg)) — Var(Δv) = 2σ_v² carries the extra
+        # factor of 2 that a plain e'e/(n_obs-n_reg) would miss (see
+        # `_one_step_variance`'s docstring). Guards against reintroducing the
+        # N-scaling / missing-factor-2 bug this fix corrected.
+        Z_h = DynamicPanelModels._drop_collinear_columns(
+            build_instruments(DifferenceGMM(), diff_data)
+        )
+        A_h = DynamicPanelModels._ab_h_weight_matrix(Z_h, diff_data.panel_info)
+        e1 = y - X_mat * result.coef
+        n_obs_h, n_reg_h = size(X_mat)
+        σ2_h = dot(e1, e1) / (2 * (n_obs_h - n_reg_h))
+        expected_vcov = σ2_h * inv(X_mat' * Z_h * (A_h \ (Z_h' * X_mat)))
+        @test result.vcov ≈ Matrix(expected_vcov) rtol = 1e-6
     end
 
     # Two-Step GMM with Windmeijer Correction
@@ -189,8 +205,9 @@ using DynamicPanelModels
         @test occursin("collinear", result_collinear.value.msg)
     end
 
-    # Guards the Arellano-Bond (1991, p.279) one-step weighting matrix:
-    # A_N = N^-1 * sum_i Z_i'HZ_i, H_i[t,s] = 2 (t==s), -1 (calendar-adjacent).
+    # Guards the Arellano-Bond (1991, eq. 3-4) one-step weighting matrix:
+    # A = sum_i Z_i'HZ_i (deliberately NOT divided by N), H_i[t,s] = 2 (t==s),
+    # -1 (calendar-adjacent).
     @testset "Arellano-Bond H weighting matrix" begin
         # Two individuals, three consecutive differenced-equation periods each
         # (times 2,3,4), one instrument column of all-ones so Z'HZ reduces to
@@ -225,11 +242,12 @@ using DynamicPanelModels
         # individual 2 (gap, not adjacent): sum(H_2) = 2*2 + 0 = 4
         @test H_gap[1, 1] ≈ 6.0
 
-        # DifferenceGMM dispatches to the H-weighted matrix; other estimators
-        # keep the plain (Z'Z)^-1 fallback.
+        # DifferenceGMM dispatches to the H-weighted matrix (deliberately NOT
+        # divided by N — see the docstring on `initial_weight_matrix`); other
+        # estimators keep the plain (Z'Z)^-1 fallback.
         diff_data_h = merge(diff_data, (panel_info=panel_info_h, n_groups=2))
         W_ab = DynamicPanelModels.initial_weight_matrix(DifferenceGMM(), Z, diff_data_h)
-        @test W_ab ≈ inv(H / 2)
+        @test W_ab ≈ inv(H)
         W_plain = DynamicPanelModels.initial_weight_matrix(SystemGMM(), Z, diff_data_h)
         @test W_plain ≈ inv(Matrix(Z' * Z))
     end

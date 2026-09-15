@@ -39,8 +39,9 @@ Difference GMM (Arellano-Bond, 1991) removes fixed effects by
 first-differencing and supports one-step and two-step estimation, robust
 standard errors, and instrument collapsing for large instrument sets. System
 GMM (Blundell-Bond, 1998) jointly estimates the differenced and level
-equations, offering efficiency gains for persistent series. Anderson-Hsiao
-(1981) is provided as a simple IV baseline for comparison.
+equations (the latter with its own intercept, `_cons`, as in `xtabond2`),
+offering efficiency gains for persistent series. Anderson-Hsiao (1981) is
+provided as a simple IV baseline for comparison.
 
 Standard errors are one-step or two-step, cluster-robust, with the Windmeijer
 (2005) finite-sample correction available for the two-step case. Regressors
@@ -71,15 +72,30 @@ Instrument sets can be controlled with forward orthogonal deviations
 (`min_lag`/`max_lag`), instrument collapsing (`collapse`), and automatic
 dropping of collinear instruments.
 
+## Validation
+
+The estimators are checked against published and reference-implementation
+results, not just internal consistency. On the Arellano-Bond (1991) EmplUK
+data (`examples/example.jl`, and `test/test_replication.jl` with a bundled
+copy), the package reproduces Table 4 of the paper to the published precision:
+two-step $n_{t-1} = 0.629$, $n_{t-2} = -0.065$, $w = -0.526$, $k = 0.278$,
+$ys = 0.592$, Hansen $J = 31.4$ (25 df); one-step $n_{t-1} = 0.686$ (0.145),
+Sargan 65.8. Coefficients, robust and Windmeijer-corrected standard errors,
+the J-statistics and the AR(1)/AR(2) statistics all match R's `plm::pgmm`,
+`plm::vcovHC` and `plm::mtest` to three or four decimals, and Anderson-Hsiao
+matches a hand-computed 2SLS to machine precision.
+
 ## Installation
 
-This package is currently unregistered and requires Julia 1.12 or higher.
-Install it directly from GitHub:
+The package is registered in the Julia General registry and requires Julia
+1.12 or higher:
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/MichalS16/DynamicPanelModels.jl")
+Pkg.add("DynamicPanelModels")
 ```
+
+For the development version, `Pkg.add(url="https://github.com/MichalS16/DynamicPanelModels.jl")`.
 
 ## Quick start
 
@@ -113,10 +129,10 @@ guide for a full walkthrough.
 | :--- | :--- |
 | `fit(Estimator, df; ...)` | Fits the specified GMM estimator to the provided panel data. Key arguments: `formula`, `id_col`, `time_col`, `exog`. |
 | `exog = ["x1", ...]` | Names of RHS regressors (as they appear in `formula`) that are strictly exogenous; each is additionally used as its own GMM instrument. Defaults to none — non-lagged regressors are otherwise only weakly identified through incidental correlation with the `y`-lag instruments. |
-| `time_effects = true` | Adds automatically-generated period dummies (T−2, exogenous) to absorb common time shocks. |
+| `time_effects = true` | Adds automatically-generated exogenous period dummies (one per period identified in the transformed sample) to absorb common time shocks. |
 | `DifferenceGMM(robust=true)` | Arellano-Bond (1991). Settings: `robust`, `steps`, `windmeijer`. |
 | `SystemGMM(robust=true)` | Blundell-Bond (1998), for persistent series ($\rho \approx 1$). Settings: `robust`, `steps`, `windmeijer`. |
-| `AndersonHsiao()` | Anderson-Hsiao (1981) IV baseline (no settings). |
+| `AndersonHsiao()` | Anderson-Hsiao (1981) IV baseline (no settings): one lagged level $y_{i,t-k-1}$ per `lag(y, k)` regressor. |
 | `diagnose(model)` | Runs Sargan, AR, and normality tests together. |
 | `sargan_test(model)` | Tests instrument validity (overidentifying restrictions). |
 | `ar_test(model, order)` | Arellano-Bond test for serial correlation of order 1, 2, …; cached after `diagnose`. |
