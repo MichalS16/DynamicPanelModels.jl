@@ -30,5 +30,6 @@ Random.seed!(123)
         include("test_transformations.jl")
         include("test_types.jl")
         include("test_integration.jl")
+        include("test_replication.jl")
     end
 end

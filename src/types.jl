@@ -44,9 +44,9 @@ are valid instruments for `Δy_{i,t-1}` under the assumption that `ε_it` is not
 serially correlated (so `E[Δε_it · y_{i,t-s}] = 0` for `s ≥ 2`); this is what
 [`ar_test`](@ref) checks (a significant AR(2) statistic on the differenced
 residuals signals misspecification). One-step uses the Arellano-Bond (1991,
-p.279) weighting matrix `A_N = N⁻¹ Σᵢ Zᵢ'HZᵢ` (`H` reflecting the MA(1)
-structure that differencing induces in homoskedastic errors); two-step
-re-weights by the estimated one-step residual covariance and, when
+eq. 3-4) weighting matrix `Σᵢ Zᵢ'HZᵢ` (`H` reflecting the MA(1) structure
+that differencing induces in homoskedastic errors); two-step re-weights by
+the estimated one-step residual covariance and, when
 `windmeijer=true`, applies the Windmeijer (2005) finite-sample correction to
 avoid understating the two-step standard errors.
 
@@ -86,11 +86,13 @@ before trusting System GMM estimates on highly persistent series.
 Anderson–Hsiao (1981) instrumental-variables estimator for dynamic panel data models.
 
 Estimates the first-differenced equation `Δy_it = α Δy_{i,t-1} + Δx_it'β + Δε_it`
-by IV, instrumenting `Δy_{i,t-1}` with a single lagged level `y_{i,t-2}` (or,
-equivalently, `Δy_{i,t-2}`). Unlike Difference/System GMM it uses exactly one
-instrument for the lagged-difference regressor rather than the full set of
-valid lags, so it is consistent but generally less efficient; it has no
-tuning hyperparameters and serves as a simple baseline for comparison.
+by IV, instrumenting each lagged-difference regressor `Δy_{i,t-k}` (formula
+term `lag(y, k)`) with the single lagged level `y_{i,t-k-1}` — so `y_{i,t-2}`
+for the usual one-lag model, plus `y_{i,t-3}` if `lag(y, 2)` is also included,
+and so on. Unlike Difference/System GMM it uses exactly one instrument per
+lagged-difference regressor rather than the full set of valid lags, so it is
+consistent but generally less efficient; it has no tuning hyperparameters and
+serves as a simple baseline for comparison.
 """
 struct AndersonHsiao <: AbstractDynamicPanelModel end
 

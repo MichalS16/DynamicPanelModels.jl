@@ -214,8 +214,11 @@ Prepare panel data for dynamic panel GMM estimation by constructing lagged regre
   their own ("IV-style") instrument column, following standard practice for GMM dynamic
   panel estimators (Roodman, 2009); this is in addition to using them directly as
   regressors. The dependent variable (or its lag) may not be marked exogenous.
-- `time_effects`: If `true`, add `T-2` period dummies (the first two periods are the
-  reference, for identification in the differenced equation) as exogenous regressors.
+- `time_effects`: If `true`, add period dummies (as exogenous regressors) for every
+  period identified in the transformed sample; the earliest periods are the reference
+  (unidentified), where "earliest" depends on the deepest lag used anywhere in the
+  formula, not just 2 (a lag-`L` regressor leaves no valid transformed row before
+  period index `L + 2`, so a dummy for an earlier period would be identically zero).
 
 # Returns
 A `NamedTuple` with:
@@ -308,17 +311,31 @@ function get_diff_data(
     valid_times = sort(unique(df_sorted[!, time_col]))
 
     # Time-effect dummies, treated as exogenous regressors instrumented by
-    # themselves. In a first-differenced equation only T-2 period dummies are
-    # identified (differencing costs one degree of freedom beyond the usual
-    # reference period), so the first two periods are dropped.
-    dummy_periods = time_effects ? valid_times[3:end] : eltype(valid_times)[]
+    # themselves. In the first-differenced equation, the earliest retained row
+    # needs period index `max_lag_order + 2` (a lag-L regressor NaNs out rows
+    # 1..L, so the first valid *differenced* pair needs row L+2); a dummy for
+    # any earlier period would be identically zero across the retained sample
+    # (unidentified / rank-deficient), not just "one degree of freedom" short.
+    # For lag-1-only formulas this reduces to the original T-2 rule.
+    max_lag_order = isempty(x_specs) ? 1 : max(1, maximum(s.lag for s in x_specs))
+    dummy_periods = time_effects ? valid_times[(max_lag_order + 2):end] : eltype(valid_times)[]
     n_x = length(x_specs)
     n_dummy = length(dummy_periods)
-    n_cols = n_x + n_dummy
+    # SystemGMM's level equation needs its own intercept (dynamic panel GMM
+    # otherwise has none, since differencing removes it): a column that is
+    # always 1.0 at the raw-data level, so it differences to exactly 0 in the
+    # transformed equation (no intercept there) but appears as 1 in the level
+    # equation, exactly as standard System GMM practice requires.
+    has_level_const = model isa SystemGMM
+    n_cols = n_x + n_dummy + (has_level_const ? 1 : 0)
     for p in dummy_periods
         push!(coef_names, "t=$(p)")
     end
     append!(exog_idx, (n_x + 1):(n_x + n_dummy))
+    if has_level_const
+        push!(coef_names, "_cons")
+        push!(exog_idx, n_x + n_dummy + 1)
+    end
 
     # Concrete id/time element types keep the lookups and panel metadata
     # type-stable (avoids boxing identifiers as `Any` in the hot data-prep loop).
@@ -371,6 +388,10 @@ function get_diff_data(
             X_vals[:, n_x + jd] = Float64.(times .== p)
         end
 
+        # SystemGMM level-equation constant: 1.0 at every period, so it
+        # differences to exactly 0 (transformed equation) but is 1 in levels.
+        has_level_const && (X_vals[:, n_x + n_dummy + 1] .= 1.0)
+
         # Store Level Values Lookup
         group_y_map = Dict{TIME,Float64}()
         for (k, t) in enumerate(times)
@@ -383,6 +404,7 @@ function get_diff_data(
         group_diff_map = Dict{TIME,Float64}()
         if transform == :fd
             for k in 2:n_t
+                times[k] - times[k - 1] == 1 || continue  # skip across an internal time gap
                 dy = y_vals[k] - y_vals[k - 1]
                 dX = @views X_vals[k, :] - X_vals[k - 1, :]
                 if !isnan(dy) && !any(isnan, dX)
@@ -453,12 +475,19 @@ function get_diff_data(
         coef_names=coef_names,
         panel_info=panel_info,
         n_obs=n_obs,
-        n_groups=length(ids),
+        # Only groups that actually contribute a retained row (not `length(ids)`,
+        # which also counts groups dropped for being too short or fully NaN'd
+        # out by lags/gaps) — this feeds instrument-count/group diagnostics.
+        n_groups=length(Set(r.id for r in panel_info)),
         id_time_to_y=id_time_to_y,
         id_time_to_diff_y=id_time_to_diff_y,
         valid_times=valid_times,
         formula=formula,
         exog_idx=exog_idx,
         transform=transform,
+        # Lag orders of the dependent variable appearing as regressors
+        # (e.g. [1, 2] for `y ~ lag(y) + lag(y, 2) + x`); AndersonHsiao needs
+        # one level instrument per such lag.
+        y_lag_orders=[s.lag for s in x_specs if s.var == y_spec.var && s.lag > 0],
     )
 end

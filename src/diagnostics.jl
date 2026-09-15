@@ -104,7 +104,30 @@ end
 """
     ar_test(model::DynamicPanelResult, order::Int, id::Vector, time::Vector)
 
-Perform the Arellano–Bond test for serial correlation of order `order` (AR(order)).
+Perform the Arellano–Bond test for serial correlation of order `order` (AR(order)),
+following the `m_k` statistic construction of Arellano & Bond (1991, eq. 8) —
+the same general (weight-matrix-agnostic) formula used by Stata's `abar`/`xtabond2`
+and R's `plm::mtest`.
+
+Let `ê` be the model residuals and `ê₋ₘ` their `order`-lag (zero where
+unavailable, matching each `(id, time)` pair). With `W` the GMM weight matrix
+used to obtain the model's coefficients and `V` its reported variance-covariance
+matrix (`model.W`/`model.vcov` — whichever step/robustness setting was actually
+fit), the test statistic is
+
+    m = (ê'ê₋ₘ) / sqrt(term1 + term2 + term3)
+
+where, summing per-individual (cluster) cross moments `cᵢ = ê_i'ê_{i,-m}`,
+
+    term1 = Σᵢ cᵢ²
+    term2 = -2 (ê₋ₘ'X) (X'Z W Z'X)⁻¹ (X'Z) W (Σᵢ Zᵢ'êᵢ · cᵢ)
+    term3 = (ê₋ₘ'X) V (X'ê₋ₘ)
+
+`term1` sums squared *individual* cross moments (not squared per-observation
+products); `term2`/`term3` use `ê₋ₘ'X` as a single sum over all retained rows.
+This formula is invariant to any positive scalar rescaling of `W` (like `β̂`
+and the robust sandwich vcov), so it is unaffected by which arbitrary scale a
+one-step weight matrix happens to carry.
 
 # Arguments
 - `model::DynamicPanelResult`: Fitted dynamic panel model containing residuals, regressors, and variance-covariance matrix.
@@ -124,26 +147,38 @@ function ar_test(model::DynamicPanelResult, order::Int, id::Vector, time::Vector
     # Extract necessary components
     res = model.residuals
     X = model.X
-    Z = model.Z
+    Z = Matrix(model.Z)
+    W = model.W
     V = model.vcov
 
     # Compute test statistic
     idx_map = _id_time_index(id, time)
     res_lag = _lag_vector(res, id, time, order, idx_map)
     numerator = dot(res, res_lag)
-    var_moments = sum((res .* res_lag) .^ 2)
 
-    # Compute variance of the estimation part (reuse idx_map across columns
-    # instead of rebuilding it once per regressor)
-    X_lag = similar(X)
-    for i in axes(X, 2)
-        X_lag[:, i] = _lag_vector(X[:, i], id, time, order, idx_map)
+    # Per-individual cross moments cᵢ = êᵢ'ê_{i,-m} (eq. 8 sums squared
+    # *cluster* moments, not squared per-observation products).
+    groups = Dict{eltype(id),Vector{Int}}()
+    for i in eachindex(id)
+        push!(get!(groups, id[i], Int[]), i)
+    end
+    n_inst = size(Z, 2)
+    term1 = 0.0
+    q = zeros(n_inst)
+    for r in values(groups)
+        e_i = @view res[r]
+        el_i = @view res_lag[r]
+        cross_i = dot(e_i, el_i)
+        term1 += cross_i^2
+        q .+= (@view(Z[r, :])' * e_i) .* cross_i
     end
 
-    # Variance calculation
-    d = - (X' * res_lag + X_lag' * res)
-    var_estimation = dot(d, V * d)
-    total_variance = var_moments + var_estimation
+    ZtX = Z' * X
+    M = inv(posdef_fix(ZtX' * W * ZtX))
+    Xel = X' * res_lag  # ê₋ₘ'X, as a column vector
+    term2 = -2 * dot(Xel, M * ZtX' * W * q)
+    term3 = dot(Xel, V * Xel)
+    total_variance = term1 + term2 + term3
 
     # Handle edge case: non-positive variance
     if total_variance <= 0

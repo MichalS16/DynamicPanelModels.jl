@@ -1,16 +1,10 @@
-## What does this change?
+## Summary
 
-## Why?
-
-(Link the issue this addresses, if any. If this changes or adds a formula,
-cite the source paper — see CONTRIBUTING.md's "econometric correctness" guideline.)
+<!-- What does this PR change and why? -->
 
 ## Checklist
 
-- [ ] `julia --project=. -e 'using Pkg; Pkg.test()'` passes locally
-- [ ] Added/updated tests for any new or changed behavior (not just constructor
-      checks — see CLAUDE.md's gotcha on this)
-- [ ] Added a `CHANGELOG.md` entry under `[Unreleased]` for user-visible changes
-- [ ] Ran the formatter (`.JuliaFormatter.toml`, Blue style) before committing
-- [ ] New public functions have docstrings and are `export`ed in
-      `src/DynamicPanelModels.jl`
+- [ ] Tests added/updated (`julia --project=. -e 'using Pkg; Pkg.test()'`)
+- [ ] Formatted (`make format` — JuliaFormatter, blue style; see CONTRIBUTING.md)
+- [ ] Docs updated if public API changed
+- [ ] `CHANGELOG.md` updated

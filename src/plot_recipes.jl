@@ -1,5 +1,13 @@
 # src/plot_recipes.jl
 
+# `StatsBase.zscore` divides by `std(v)`, which is `NaN` for a single
+# observation (sample std has an n-1 denominator) or any zero-variance
+# vector — the resulting all-NaN series doesn't just render blank, it
+# crashes deep inside Plots' histogram/QQ binning (`maximum` over an
+# internally NaN-filtered, hence empty, vector). Treat "no variance" as
+# "everything at the mean" (z=0) instead of propagating NaN.
+_safe_zscore(v) = (s=std(v); isfinite(s) && s > 0 ? zscore(v) : zeros(eltype(v), length(v)))
+
 """
     plot_recipe(model::DynamicPanelResult; plot_type::Symbol=:dashboard)
 
@@ -76,7 +84,7 @@ residuals by observation index.
 @recipe function f(model::DynamicPanelResult, ::Val{:residuals})
     # Residuals Plot
     resid = model.residuals
-    std_resid = zscore(resid)
+    std_resid = _safe_zscore(resid)
 
     title --> "Standardized Residuals"
     xguide --> "Observation Index"
@@ -174,7 +182,8 @@ with an overlaid standard normal curve to assess residual distribution.
 @recipe function f(model::DynamicPanelResult, ::Val{:histogram})
     # Data Preparation
     resid = filter(isfinite, model.residuals)
-    std_resid = zscore(resid)
+    isempty(resid) && error("No finite residuals to plot (all NaN/Inf).")
+    std_resid = _safe_zscore(resid)
 
     # Plot Settings
     title --> "Residual Density"
@@ -220,11 +229,15 @@ to assess normality.
     # Q-Q Plot
     raw_resid = filter(isfinite, collect(skipmissing(model.residuals)))
     n = length(raw_resid)
+    n == 0 && error("No finite residuals to plot (all NaN/Inf).")
 
-    # Standardized residuals and theoretical quantiles
-    std_resid = zscore(raw_resid)
+    # Standardized residuals and theoretical quantiles (Blom-style plotting
+    # positions: (i - 0.5)/n for i = 1:n, not (1:(n-0.5))/n — the latter is
+    # off by one element (i/n for i = 1:(n-1), dropping the extremes and
+    # misaligning every point against `sorted_resid`).
+    std_resid = _safe_zscore(raw_resid)
     sorted_resid = sort(std_resid)
-    probs = (1:(n .- 0.5)) ./ n
+    probs = ((1:n) .- 0.5) ./ n
     theo_q = quantile.(Normal(), probs)
 
     # Plot Settings

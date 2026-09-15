@@ -95,6 +95,15 @@ using DynamicPanelModels
         @test haskey(data.id_time_to_diff_y, 1)
         @test haskey(data.id_time_to_diff_y[1], 3)
         @test data.id_time_to_diff_y[1][3] == 1.0
+
+        # SystemGMM's level equation gets its own intercept ("_cons"): 0 on
+        # differenced rows (differences to nothing, since it's constant), 1 on
+        # level rows, and it is its own instrument only for the level block.
+        @test data.coef_names[end] == "_cons"
+        cons_col = length(data.coef_names)
+        @test all(data.X[diff_rows, cons_col] .== 0.0)
+        @test all(data.X[level_rows, cons_col] .== 1.0)
+        @test cons_col in data.exog_idx
     end
 
     # Lag Generation Logic
@@ -105,6 +114,31 @@ using DynamicPanelModels
 
         # Tests on output
         @test all(data.X .== 1.0)
+    end
+
+    @testset "Internal time gaps are not differenced positionally" begin
+        # id=1 is missing t=3 (a genuine calendar gap); id=2 is complete. Uses
+        # a plain (unlagged) regressor so the only source of dropped rows is
+        # the gap itself, not lag-induced NaNs. Differencing must skip across
+        # the gap (t=2 -> t=4 is NOT a valid first difference), not silently
+        # subtract adjacent *rows*.
+        df = DataFrame(
+            id=[1, 1, 1, 2, 2, 2, 2],
+            t=[1, 2, 4, 1, 2, 3, 4],
+            y=[1.0, 2.0, 100.0, 10.0, 20.0, 30.0, 40.0],
+            x=[5.0, 6.0, 7.0, 1.0, 2.0, 3.0, 4.0],
+        )
+        data = get_diff_data(df, :id, :t, "y ~ x", DifferenceGMM())
+
+        id1_rows = [i for (i, row) in enumerate(data.panel_info) if row.id == 1]
+        # Only t=2 (dy = y(2)-y(1) = 1.0) is a valid differenced row for id=1;
+        # t=4 must be dropped (gap at t=3), never dy = y(4)-y(2) = 98.0.
+        @test length(id1_rows) == 1
+        @test data.panel_info[only(id1_rows)].time == 2
+        @test data.y[only(id1_rows)] ≈ 1.0
+
+        id2_rows = [i for (i, row) in enumerate(data.panel_info) if row.id == 2]
+        @test length(id2_rows) == 3  # id=2 has no gap: t=2,3,4 all valid
     end
 
     # Exogenous regressor specification
@@ -202,12 +236,35 @@ using DynamicPanelModels
             df, :id, :t, "y ~ lag(log(sqrt(x)))", DifferenceGMM()
         )
 
-        # Time effects add T-2 exogenous period dummies (first two periods dropped
-        # for identification in the differenced equation). Here T=5 -> t=3,4,5.
+        # Time effects add exogenous period dummies for every period actually
+        # identified in the transformed sample. Here T=5, max lag order = 1
+        # -> earliest usable period index 1+2=3 -> t=3,4,5.
         d4 = get_diff_data(df, :id, :t, "y ~ lag(y) + x", DifferenceGMM(); time_effects=true)
         @test d4.coef_names == ["L.y", "x", "t=3", "t=4", "t=5"]
         # dummy columns (3..5) are all flagged exogenous
         @test d4.exog_idx == [3, 4, 5]
+
+        # A deeper lag (lag(y,2)) pushes the earliest identified period later
+        # (max lag order 2 -> index 2+2=4): a dummy for t=3 would be
+        # identically zero in the retained sample (unidentified), so it must
+        # NOT be included, unlike the lag-1-only case above.
+        d5 = get_diff_data(
+            df, :id, :t, "y ~ lag(y) + lag(y, 2) + x", DifferenceGMM(); time_effects=true
+        )
+        @test d5.coef_names == ["L.y", "L2.y", "x", "t=4", "t=5"]
+        @test all(!isnan, d5.X)  # no residual NaN from an unidentified dummy column
+    end
+
+    @testset "n_groups excludes groups with no retained observations" begin
+        # id=2 has only 2 periods (below the n_t>=3 floor); only id=1, id=3
+        # should count toward n_groups, not length(unique(id)) == 3.
+        df = DataFrame(
+            id=[1, 1, 1, 2, 2, 3, 3, 3],
+            t=[1, 2, 3, 1, 2, 1, 2, 3],
+            y=[1.0, 2, 3, 10, 11, 20, 21, 22],
+        )
+        data = get_diff_data(df, :id, :t, "y ~ lag(y)", DifferenceGMM())
+        @test data.n_groups == 2
     end
 
     # Input validation errors

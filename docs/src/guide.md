@@ -6,12 +6,15 @@ CurrentModule = DynamicPanelModels
 
 ## Installation
 
-The package is currently unregistered and can be installed directly from GitHub:
+The package is registered in the Julia General registry (Julia 1.12+):
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/MichalS16/DynamicPanelModels.jl")
+Pkg.add("DynamicPanelModels")
 ```
+
+For the development version, use
+`Pkg.add(url="https://github.com/MichalS16/DynamicPanelModels.jl")`.
 
 ## Input data
 
@@ -75,8 +78,9 @@ OLS/within estimation is biased — Nickell, 1981). Differencing removes
   equation's own instrument set). This requires the extra mean-stationarity
   assumption ``E[\eta_i \Delta y_{it}] = 0`` and improves efficiency exactly
   where Difference GMM struggles (``\alpha`` near 1).
-- **Anderson-Hsiao** ([`AndersonHsiao`](@ref), 1981) instruments
-  ``\Delta y_{i,t-1}`` with a single lagged level ``y_{i,t-2}``, giving a
+- **Anderson-Hsiao** ([`AndersonHsiao`](@ref), 1981) instruments each
+  lagged-difference regressor ``\Delta y_{i,t-k}`` with a single lagged level
+  ``y_{i,t-k-1}`` (so ``y_{i,t-2}`` for the usual one-lag model), giving a
   consistent but less-efficient IV baseline (it is the ``T=2``-instrument
   special case that Arellano-Bond generalizes).
 

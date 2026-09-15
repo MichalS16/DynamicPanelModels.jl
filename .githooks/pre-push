@@ -1,0 +1,3 @@
+#!/bin/sh
+# Run the test suite before pushing.
+julia --project=. -e 'using Pkg; Pkg.test()'

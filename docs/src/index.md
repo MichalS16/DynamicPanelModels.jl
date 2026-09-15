@@ -47,6 +47,10 @@ trustworthy on its own.
 - **Practical controls**: instrument collapsing and `min_lag`/`max_lag`
   limits (`xtabond2`-style) for large-`T` panels where the instrument count
   can otherwise explode; forward orthogonal deviations for unbalanced panels.
+- **Validated against the literature**: reproduces Arellano & Bond (1991)
+  Table 4 on the original EmplUK data to the published precision, and matches
+  R's `plm::pgmm`/`vcovHC`/`mtest` to three or four decimals (checked in the
+  test suite, `test/test_replication.jl`).
 - **Ecosystem-native**: accepts any [Tables.jl](https://github.com/JuliaData/Tables.jl)
   source, supports both string and StatsModels `@formula` syntax, and fitted
   models implement the standard StatsAPI (`coef`, `vcov`, `stderror`,

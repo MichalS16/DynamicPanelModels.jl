@@ -7,6 +7,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-15
+
+### Fixed
+
+Econometric correctness audit (independently verified against R's `plm::pgmm`/
+`plm::mtest` on the Arellano-Bond (1991) EmplUK replication, plus targeted
+simulated DGPs). These change numeric output — not a patch release.
+
+- **`DifferenceGMM` one-step Sargan/Hansen J-statistic** was computed as
+  `N · q` instead of `q / σ_v̂²` (the weight matrix used to obtain β1 was
+  arbitrarily N-scaled, which is harmless for β1 and the one-step robust
+  sandwich SEs but not for the J-statistic). EmplUK one-step Sargan: was ≈70.9,
+  now ≈63.8-64.9 (paper: 65.8).
+- **`SystemGMM`/`AndersonHsiao` one-step Sargan J-statistic** likewise
+  omitted the `/σ̂²` scaling of the classical Sargan statistic
+  `e'Z(Z'Z)⁻¹Z'e / σ̂²` (EmplUK System GMM one-step: was ≈1.2 for 38 df,
+  now ≈74).
+- **`DifferenceGMM` one-step non-robust (homoskedastic) standard errors** were
+  too small by a factor of `2/N` for the same reason. EmplUK: was 0.0169, now
+  0.1414 (independently verified formula match).
+- **`ar_test` (Arellano-Bond AR(m) test)** used an incorrect variance formula
+  (summed squared per-observation products with no instrument/weight term)
+  instead of Arellano & Bond (1991) eq. (8)'s per-individual cross moments
+  plus the correct delta-method estimation-uncertainty term. Now matches R's
+  `plm::mtest` to 3 decimals on EmplUK (one-step and two-step).
+- **`SystemGMM` had no level-equation intercept**, biasing estimates whenever
+  the fixed effect and/or regressors have nonzero mean (the realistic case for
+  levels data, e.g. logs) — confirmed via simulation: ρ̂=0.796 for true ρ=0.5
+  became ρ̂=0.497 after adding a `"_cons"` regressor/instrument to the level
+  block.
+- **`time_effects=true` used a hardcoded `T-2` dummy count**, which is only
+  correct for lag-1-only formulas; a formula with a deeper lag (e.g.
+  `lag(y, 2)`, as in the AB(1991) replication) produced an unidentified
+  (all-zero) dummy column and a spurious collinearity error. Now derives the
+  dummy start from the deepest lag actually used.
+- **First-differencing subtracted adjacent *rows*, not calendar-adjacent
+  *periods*** — an internal gap in an unbalanced panel (e.g. t=2 then t=4,
+  missing t=3) was differenced as `y(4) - y(2)` instead of being skipped.
+- **`diff_data.n_groups` counted groups with no retained observations**
+  (too-short groups, or groups fully dropped by lag/gap requirements),
+  inflating the instrument-count/group ratio reported by diagnostics.
+
+With these fixes the package reproduces Arellano & Bond (1991) Table 4 to the
+published precision on EmplUK (`examples/example.jl`, now with the paper's
+year dummies): two-step n(-1)=0.6287, n(-2)=-0.0652, w=-0.5258, k=0.2784,
+ys=0.5919, Hansen J=31.38 (paper 31.4); one-step n(-1)=0.6862 (0.1446),
+Sargan 65.82 (paper 65.8); AR(1)/AR(2) equal to R's `plm::mtest` to three
+decimals.
+
+### Added
+
+- `AndersonHsiao` now supports multiple lags of the dependent variable: each
+  `lag(y, k)` regressor gets its own level instrument `y_{t-k-1}` (FOD:
+  `y_{t-k}`), so `y ~ lag(y) + lag(y, 2) + …` is exactly identified instead of
+  failing as under-identified. `get_diff_data` exposes the lag orders as
+  `y_lag_orders`.
+- Versioned git hooks (`.githooks/`, enable via `git config core.hooksPath
+  .githooks`): pre-commit formats staged Julia files and blocks accidentally
+  staged gitignored artifacts (`Manifest.toml`, `docs/build/`, `*.pdf`,
+  `changelog.md`); commit-msg rejects empty/wip/fixup messages on `main`;
+  pre-push runs the full test suite.
+- Dedicated Aqua quality-checks CI job (previously only ran inside the main
+  test job, not separately visible in CI status).
+- `.github/dependabot.yml` for GitHub Actions version updates (CompatHelper
+  already covered Julia package deps).
+- PR template and issue templates (bug report / feature request).
+- `CITATION.cff` for machine-readable citation.
+- `Makefile` with short aliases (`make test`, `make format`, `make docs`,
+  `make example`, `make hooks`) for the long `julia --project=...` commands.
+- `CONTRIBUTING.md`.
+- `benchmarks/` — ad-hoc `Chairmarks.jl` timing script for the GMM solver on
+  larger panels (N=500/5,000/50,000), not wired into CI.
+- `test/test_replication.jl` with a bundled copy of the EmplUK data
+  (`test/data/`): asserts the Arellano-Bond (1991) Table 4 (a1)/(a2)
+  coefficients, SEs, Sargan/Hansen and AR(1)/AR(2) statistics against the
+  published values and against `plm`, without network access.
+
+### Changed
+
+- README/docs: the package is registered in General (`Pkg.add("DynamicPanelModels")`),
+  not "unregistered"; added a Validation section.
+
+- CI: GitHub Actions bumped (`actions/checkout@v7`, `julia-actions/setup-julia@v3`,
+  `julia-actions/cache@v3`, `codecov/codecov-action@v6`).
+
+Each fix has a dedicated regression test (see `test/`) and the reasoning is
+recorded in the relevant docstrings (`_one_step_variance`, `ar_test`,
+`get_diff_data`, `initial_weight_matrix`).
+
 ## [0.3.3] — 2026-08-12
 
 ### Changed
@@ -143,7 +232,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs, `.JuliaFormatter.toml`, `CHANGELOG.md`, `CONTRIBUTING.md`, and integration
   tests against a simulated panel with known parameters.
 
-[Unreleased]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.3...HEAD
+[Unreleased]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.3...v0.4.0
 [0.3.3]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.2...v0.3.3
 [0.3.2]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/MichalS16/DynamicPanelModels.jl/compare/v0.3.0...v0.3.1

@@ -81,12 +81,19 @@ using SparseArrays
         @test ar1 isa DynamicPanelTest
         @test ar1.test_name == "Arellano-Bond AR(1)"
         @test !isnan(ar1.stat)
+        # Independent reimplementation of Arellano & Bond (1991) eq. (8): the
+        # mock's Z is all-zero, so the instrument cross-term (term2) vanishes
+        # and only the per-cluster moment variance (term1) and the delta-method
+        # estimation-uncertainty term (term3) remain.
         res_lag = DynamicPanelModels._lag_vector(residuals, id_vec, time_vec, 1)
-        X_lag = reduce(
-            hcat, [DynamicPanelModels._lag_vector(X[:, i], id_vec, time_vec, 1) for i in axes(X, 2)]
-        )
-        d = -(X' * res_lag + X_lag' * residuals)
-        expected_var = sum((residuals .* res_lag) .^ 2) + dot(d, vcov * d)
+        groups = Dict{Int,Vector{Int}}()
+        for i in eachindex(id_vec)
+            push!(get!(groups, id_vec[i], Int[]), i)
+        end
+        expected_term1 = sum(dot(residuals[r], res_lag[r])^2 for r in values(groups))
+        Xel = X' * res_lag
+        expected_term3 = dot(Xel, vcov * Xel)
+        expected_var = expected_term1 + expected_term3
         expected_stat = dot(residuals, res_lag) / sqrt(expected_var)
         @test isapprox(ar1.stat, expected_stat)
         @test isapprox(ar1.pvalue, 2.0 * (1.0 - cdf(Normal(), abs(expected_stat))))
