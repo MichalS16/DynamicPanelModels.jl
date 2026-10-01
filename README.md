@@ -6,6 +6,7 @@
 [![Julia](https://img.shields.io/badge/Julia-1.12+-9558B2?logo=julia)](https://julialang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Aqua](https://raw.githubusercontent.com/JuliaTesting/Aqua.jl/master/badge.svg)](https://github.com/JuliaTesting/Aqua.jl)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22849568.svg)](https://doi.org/10.5281/zenodo.22849568)
 
 Panel data with a lagged dependent variable
 ($y_{it} = \alpha y_{i,t-1} + x_{it}'\beta + \eta_i + \varepsilon_{it}$)

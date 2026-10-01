@@ -7,7 +7,8 @@ authors:
 repository-code: "https://github.com/MichalS16/DynamicPanelModels.jl"
 license: MIT
 version: 0.4.0
-date-released: "2026-09-15"
+date-released: "2026-09-19"
+doi: 10.5281/zenodo.22849568
 keywords:
   - julia
   - econometrics
